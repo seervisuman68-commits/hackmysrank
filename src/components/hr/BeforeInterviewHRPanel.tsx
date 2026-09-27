@@ -221,8 +221,31 @@ export const BeforeInterviewHRContent = () => {
             detectedRepoStacks: profile?.skills || reqSkills,
             githubFeedback: "Authentic commit history with clean software modularity.",
             codeSignals: ["Modular repository pattern", "Verified domain assertions", "Clean commit lineage"],
-            generatedMCQs: localMatch?.generatedMCQs?.length ? localMatch.generatedMCQs : (aiData?.mcqs?.length ? aiData.mcqs : generateDynamicMCQs(reqSkills, targetJob.title)),
-            repoCodingChallenges: localMatch?.repoCodingChallenges?.length ? localMatch.repoCodingChallenges : (aiData?.challenges?.length ? aiData.challenges : generateDynamicCodingChallenges(reqSkills, targetJob.title)),
+            generatedMCQs: aiData?.mcqs?.length
+              ? aiData.mcqs
+              : (localMatch?.generatedMCQs?.length ? localMatch.generatedMCQs : generateDynamicMCQs(reqSkills, targetJob.title)),
+            mcqScore: typeof aiData?.mcq_score === "number"
+              ? aiData.mcq_score
+              : (typeof (da.code_answers as any)?.mcq_score === "number" ? (da.code_answers as any).mcq_score : localMatch?.mcqScore),
+            repoCodingChallenges: (() => {
+              const codeAnswers = (da.code_answers as any) || {};
+              const baseChallenges = aiData?.challenges?.length
+                ? aiData.challenges
+                : (localMatch?.repoCodingChallenges?.length ? localMatch.repoCodingChallenges : generateDynamicCodingChallenges(reqSkills, targetJob.title));
+              return baseChallenges.map((c: any) => {
+                const ans = codeAnswers[c.id];
+                if (ans?.code) {
+                  return {
+                    ...c,
+                    submittedCode: ans.code,
+                    aiCodeReview: ans.review || c.aiCodeReview,
+                    submitted: true,
+                    submittedAt: ans.submitted_at || c.submittedAt,
+                  };
+                }
+                return c;
+              });
+            })(),
             aiInterviewDialogue: localMatch?.aiInterviewDialogue?.length ? localMatch.aiInterviewDialogue : [],
             skillMap: localMatch?.skillMap?.length ? localMatch.skillMap : [],
             improvementPlan: localMatch?.improvementPlan?.length ? localMatch.improvementPlan : [],

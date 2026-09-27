@@ -411,6 +411,8 @@ export const BeforeInterviewCandidateContent = () => {
     }
   };
 
+  const [submittingChallengeId, setSubmittingChallengeId] = useState<number | null>(null);
+
   const handleMCQSelect = (questionId: number, optionIdx: number) => {
     if (mcqSubmitted) return;
     setSelectedMCQAnswers((prev) => ({ ...prev, [questionId]: optionIdx }));
@@ -444,10 +446,20 @@ export const BeforeInterviewCandidateContent = () => {
 
     try {
       if (currentApp.id && !currentApp.id.startsWith("app-sim") && !currentApp.id.startsWith("app-primary")) {
+        const { data: currentDbApp } = await supabase
+          .from("applications")
+          .select("ai_analysis, code_answers, job_id")
+          .eq("id", currentApp.id)
+          .maybeSingle();
+
+        const prevAi = (currentDbApp?.ai_analysis as any) || {};
+        const prevCode = (currentDbApp?.code_answers as any) || {};
+
         await supabase
           .from("applications")
           .update({
             ai_analysis: {
+              ...prevAi,
               resume_score: currentApp.resumeScore,
               authenticity_score: currentApp.authenticityPercentage,
               github_score: currentApp.githubScore,
@@ -455,16 +467,38 @@ export const BeforeInterviewCandidateContent = () => {
               total_mcqs: updatedMCQs.length,
               mcqs: updatedMCQs,
             },
+            code_answers: {
+              ...prevCode,
+              mcq_score: correctCount,
+              mcq_answers: selectedMCQAnswers,
+              mcq_submitted_at: new Date().toISOString(),
+            },
           })
           .eq("id", currentApp.id);
+
+        // Notify HR
+        if (currentApp.jobId) {
+          const { data: jobRow } = await supabase
+            .from("jobs")
+            .select("user_id")
+            .eq("id", currentApp.jobId)
+            .maybeSingle();
+          if (jobRow?.user_id) {
+            await supabase.from("notifications").insert({
+              user_id: jobRow.user_id,
+              title: "📝 Candidate Submitted 5 MCQs",
+              message: `${currentApp.candidateName} scored ${correctCount}/${updatedMCQs.length} on Before Interview MCQs for ${currentApp.jobTitle}.`,
+            });
+          }
+        }
       }
     } catch (e) {
       console.warn("Error syncing MCQ results to Supabase:", e);
     }
 
     toast({
-      title: `MCQ Evaluation: ${correctCount} / ${(currentApp.generatedMCQs || []).length} Correct`,
-      description: "Your answers have been verified by AI and saved to your candidate dossier.",
+      title: `✅ MCQs Submitted: ${correctCount} / ${(currentApp.generatedMCQs || []).length} Correct`,
+      description: "Stage 04 Adaptive DSA Sandbox Coding Challenges are now unlocked!",
     });
   };
 
@@ -472,7 +506,7 @@ export const BeforeInterviewCandidateContent = () => {
     if (!currentApp) return;
     setAnalyzingChallengeId(challengeId);
 
-    const userCode = codeInputs[challengeId] || "";
+    const userCode = codeInputs[challengeId] ?? (currentChallenge?.starterCode || "");
     const reviewResult = analyzeCandidateCodeSubmission(challengeId, userCode);
 
     setTimeout(() => {
@@ -499,17 +533,119 @@ export const BeforeInterviewCandidateContent = () => {
 
       if (reviewResult?.passed) {
         toast({
-          title: "✅ AI Code Execution: Passed",
-          description: "All test cases passed with verified algorithmic bounds.",
+          title: "✅ Test Cases Passed!",
+          description: "Click 'Submit Solution to HR' to send your verified code to the hiring team.",
         });
       } else {
         toast({
-          title: "⚠️ Code Error Detected",
-          description: reviewResult?.feedback || "Issues detected in submitted code.",
+          title: "⚠️ Test Case Issues Detected",
+          description: reviewResult?.feedback || "Check the AI diagnostics below.",
           variant: "destructive",
         });
       }
-    }, 500);
+    }, 400);
+  };
+
+  const handleSubmitCodingChallenge = async (challengeId: number) => {
+    if (!currentApp) return;
+    setSubmittingChallengeId(challengeId);
+
+    const userCode = codeInputs[challengeId] ?? (currentChallenge?.submittedCode || currentChallenge?.starterCode || "");
+    if (!userCode.trim()) {
+      toast({ title: "No Code to Submit", description: "Please write your code solution before submitting.", variant: "destructive" });
+      setSubmittingChallengeId(null);
+      return;
+    }
+
+    const reviewResult = analyzeCandidateCodeSubmission(challengeId, userCode);
+    const updatedChallenges = (currentApp.repoCodingChallenges || []).map((c) => {
+      if (c.id === challengeId) {
+        return {
+          ...c,
+          submittedCode: userCode,
+          aiCodeReview: reviewResult,
+          submitted: true,
+          submittedAt: new Date().toISOString(),
+        };
+      }
+      return c;
+    });
+
+    const updatedApps = applications.map((a) => {
+      if (a.id === currentApp.id) {
+        return {
+          ...a,
+          repoCodingChallenges: updatedChallenges,
+        };
+      }
+      return a;
+    });
+
+    setApplications(updatedApps);
+    saveWorkflowApplications(updatedApps);
+
+    try {
+      if (currentApp.id && !currentApp.id.startsWith("app-sim") && !currentApp.id.startsWith("app-primary")) {
+        const { data: appRow } = await supabase
+          .from("applications")
+          .select("code_answers, ai_analysis, job_id")
+          .eq("id", currentApp.id)
+          .maybeSingle();
+
+        const prevCodeAnswers = (appRow?.code_answers as any) || {};
+        const prevAiAnalysis = (appRow?.ai_analysis as any) || {};
+
+        const newCodeAnswers = {
+          ...prevCodeAnswers,
+          [challengeId]: {
+            challenge_id: challengeId,
+            title: currentChallenge?.title || `Challenge ${activeChallengeIdx + 1}`,
+            code: userCode,
+            review: reviewResult,
+            passed: reviewResult?.passed ?? false,
+            submitted_at: new Date().toISOString(),
+          },
+        };
+
+        await supabase
+          .from("applications")
+          .update({
+            code_answers: newCodeAnswers,
+            ai_analysis: {
+              ...prevAiAnalysis,
+              challenges: updatedChallenges,
+            },
+          })
+          .eq("id", currentApp.id);
+
+        // Notify HR
+        if (currentApp.jobId) {
+          const { data: jobRow } = await supabase
+            .from("jobs")
+            .select("user_id")
+            .eq("id", currentApp.jobId)
+            .maybeSingle();
+
+          if (jobRow?.user_id) {
+            await supabase.from("notifications").insert({
+              user_id: jobRow.user_id,
+              title: "💻 Before Interview Coding Solution Submitted",
+              message: `${currentApp.candidateName} submitted Challenge #${activeChallengeIdx + 1} (${currentChallenge?.title}) for ${currentApp.jobTitle}.`,
+            });
+          }
+        }
+      }
+
+      toast({
+        title: "🚀 Solution Submitted to HR!",
+        description: `Your solution for "${currentChallenge?.title}" has been saved and shared with HR.`,
+      });
+    } catch (e: any) {
+      console.error("Error submitting code solution to Supabase:", e);
+      toast({ title: "Submission Error", description: e.message || "Failed to submit code solution", variant: "destructive" });
+    } finally {
+      setSubmittingChallengeId(null);
+    }
   };
 
   const handleProceedToMainRounds = async () => {
@@ -843,16 +979,6 @@ export const BeforeInterviewCandidateContent = () => {
                 }`}
               >
                 Interview Ready ({interviewReadyCount})
-              </button>
-              <button
-                onClick={() => setStatusFilter("rejected")}
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
-                  statusFilter === "rejected"
-                    ? "bg-destructive text-destructive-foreground shadow-sm"
-                    : "bg-paper text-ink hover:bg-ink/5 border border-ink/10"
-                }`}
-              >
-                Rejected ({rejectedCount})
               </button>
             </div>
 
@@ -1622,27 +1748,54 @@ export const BeforeInterviewCandidateContent = () => {
                             {/* Right: Code Editor & AI Review */}
                             <div className="lg:col-span-7 space-y-4">
                               <div className="p-5 rounded-2xl bg-paper-2 border border-ink/10 space-y-3">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-xs font-mono font-semibold text-ink flex items-center gap-1.5">
-                                    <Terminal className="w-3.5 h-3.5 text-forest" /> Code Editor (Repo-Derived Module)
-                                  </span>
-                                  <Button
-                                    size="sm"
-                                    onClick={() => handleRunCodeAnalysis(currentChallenge.id)}
-                                    disabled={analyzingChallengeId === currentChallenge.id}
-                                    className="bg-forest text-paper hover:bg-forest/90 text-xs h-8 px-3 rounded-full flex items-center gap-1.5"
-                                  >
-                                    <Play className="w-3 h-3" />
-                                    {analyzingChallengeId === currentChallenge.id ? "Analyzing with AI..." : "Run Code & AI Review"}
-                                  </Button>
+                                <div className="flex items-center justify-between flex-wrap gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-mono font-semibold text-ink flex items-center gap-1.5">
+                                      <Terminal className="w-3.5 h-3.5 text-forest" /> Code Editor (Repo Module)
+                                    </span>
+                                    {currentChallenge.submitted && (
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-forest/15 text-forest border border-forest/30 flex items-center gap-1">
+                                        <CheckCircle2 className="w-3 h-3" /> Submitted to HR
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleRunCodeAnalysis(currentChallenge.id)}
+                                      disabled={analyzingChallengeId === currentChallenge.id}
+                                      className="text-xs h-8 px-3 rounded-full flex items-center gap-1.5 border-ink/20 hover:bg-forest/10"
+                                    >
+                                      <Play className="w-3 h-3 text-forest" />
+                                      {analyzingChallengeId === currentChallenge.id ? "Testing..." : "▶ Run & Test Code"}
+                                    </Button>
+
+                                    <Button
+                                      size="sm"
+                                      onClick={() => handleSubmitCodingChallenge(currentChallenge.id)}
+                                      disabled={submittingChallengeId === currentChallenge.id}
+                                      className="bg-forest text-paper hover:bg-forest/90 text-xs h-8 px-3.5 rounded-full flex items-center gap-1.5 shadow-sm font-semibold"
+                                    >
+                                      {submittingChallengeId === currentChallenge.id ? (
+                                        <span>Submitting...</span>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="w-3 h-3" />
+                                          <span>🚀 Submit Solution to HR</span>
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
                                 </div>
 
                                 <textarea
                                   value={codeInputs[currentChallenge.id] ?? (currentChallenge.submittedCode || currentChallenge.starterCode || "")}
                                   onChange={(e) => setCodeInputs((prev) => ({ ...prev, [currentChallenge.id]: e.target.value }))}
-                                  rows={9}
-                                  className="w-full font-mono text-xs p-4 rounded-xl bg-ink text-paper border border-ink-soft focus:outline-none focus:ring-1 focus:ring-forest leading-relaxed resize-none"
-                                  placeholder="// Write your code here..."
+                                  rows={11}
+                                  className="w-full font-mono text-xs p-4 rounded-xl bg-ink text-paper border border-ink-soft focus:outline-none focus:ring-1 focus:ring-forest leading-relaxed resize-none shadow-inner"
+                                  placeholder="// Write your code solution here..."
                                 />
 
                                 {/* AI Error Feedback */}
