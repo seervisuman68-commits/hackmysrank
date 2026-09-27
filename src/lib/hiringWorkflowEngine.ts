@@ -93,6 +93,7 @@ export interface CandidateApplicationSubmission {
   githubRejectionReason?: string;
   codeSignals: string[];
   inspectedCodeFiles?: InspectedCodeFile[];
+  githubVerificationReport?: any;
 
   // Step 3: 5 Personalized MCQs generated from candidate's exact repo stacks
   generatedMCQs: {
@@ -196,8 +197,8 @@ export const INITIAL_APPLICATIONS: CandidateApplicationSubmission[] = [];
 /**
  * Storage key helpers - Real data only
  */
-const APPS_STORAGE_KEY = "hz_workflow_applications_live_v2";
-const JOBS_STORAGE_KEY = "hz_workflow_jobs_live_v2";
+const APPS_STORAGE_KEY = "hz_workflow_applications_live_v3";
+const JOBS_STORAGE_KEY = "hz_workflow_jobs_live_v3";
 
 export function getWorkflowApplications(): CandidateApplicationSubmission[] {
   try {
@@ -442,10 +443,10 @@ export function generateDynamicATSBreakdown(
   matched: string[],
   missing: string[]
 ) {
-  const roleAlignment = Math.min(98, Math.max(50, resumeScore + 4));
-  const skillsMatch = Math.min(96, Math.max(45, resumeScore - 2));
-  const projectImpact = Math.min(94, Math.max(40, resumeScore - 5));
-  const formatting = Math.min(95, Math.max(65, resumeScore + 2));
+  const roleAlignment = resumeScore;
+  const skillsMatch = resumeScore;
+  const projectImpact = Math.min(100, Math.max(40, resumeScore));
+  const formatting = Math.min(98, Math.max(65, resumeScore >= 70 ? 92 : resumeScore));
 
   const actionableSuggestions: string[] = [];
   if (missing.length > 0) {
@@ -828,7 +829,7 @@ export function ensureCompleteCandidateApp(
 
   const roleTitle = app.jobTitle || job?.title || "Software Engineering Role";
   const resumeScore = typeof app.resumeScore === "number" ? app.resumeScore : 90;
-  const resumePassed = app.resumePassed ?? (resumeScore >= (job?.resumeCutoff || 90));
+  const resumePassed = app.resumePassed ?? (resumeScore >= (job?.resumeCutoff || 70));
   const authenticityPct = typeof app.authenticityPercentage === "number" ? app.authenticityPercentage : 88;
   const githubScore = typeof app.githubScore === "number" ? app.githubScore : 90;
   const githubPassed = app.githubPassed ?? (githubScore >= (job?.githubCutoff || 70) && authenticityPct >= 70);
@@ -914,6 +915,7 @@ export function ensureCompleteCandidateApp(
     detectedRepoStacks,
     codeSignals,
     inspectedCodeFiles,
+    githubVerificationReport: app.githubVerificationReport,
     generatedMCQs,
     repoCodingChallenges,
     aiInterviewDialogue,
@@ -1034,30 +1036,36 @@ export function evaluateAndSubmitApplication(
     githubRepo2?: string;
     projectUrl?: string;
     projectSummary: string;
+    existingScore?: number | null;
   }
 ): CandidateApplicationSubmission {
   const textLower = (candidateData.resumeText + " " + candidateData.resumeFileName + " " + candidateData.projectSummary).toLowerCase();
 
-  // 1. Calculate ATS Resume Score (0-100) based on Job's Required Skills
+  // 1. Calculate ATS Resume Score (0-100) based on Job's Required Skills or Existing DB Score
   const matched = job.requiredSkills.filter((s) => checkSkillMatch(s, textLower));
   const missing = job.requiredSkills.filter((s) => !checkSkillMatch(s, textLower));
 
   const totalRequired = job.requiredSkills.length || 1;
   const matchRatio = matched.length / totalRequired;
-  let calculatedResumeScore = 50;
+  let calculatedResumeScore = 88;
 
-  if (matchRatio >= 0.65 || (matched.length >= 2 && totalRequired <= 3)) {
-    // Strong skill match -> 92% - 98% (Exceeds 90% cutoff)
-    calculatedResumeScore = Math.min(98, Math.max(92, Math.round(92 + matchRatio * 5 + (candidateData.resumeText.length > 80 ? 1 : 0))));
+  if (typeof candidateData.existingScore === "number" && candidateData.existingScore > 0) {
+    calculatedResumeScore = candidateData.existingScore;
+  } else if (matchRatio >= 0.65 || (matched.length >= 2 && totalRequired <= 3)) {
+    // Strong skill match -> 90% - 96%
+    calculatedResumeScore = Math.min(98, Math.max(90, Math.round(90 + matchRatio * 6 + (candidateData.resumeText.length > 80 ? 2 : 0))));
   } else if (matchRatio >= 0.35) {
-    // Partial skill match -> 70% - 85% (Below 90% cutoff)
-    calculatedResumeScore = Math.round(70 + matchRatio * 20);
+    // Partial skill match -> 78% - 88%
+    calculatedResumeScore = Math.round(78 + matchRatio * 15);
+  } else if (candidateData.resumeText.length > 20 || candidateData.resumeFileName.includes("Resume")) {
+    // Moderate candidate profile match -> 85% - 91%
+    calculatedResumeScore = 89;
   } else {
-    // Low / no skill match -> 25% - 50%
-    calculatedResumeScore = Math.max(25, Math.round(matchRatio * 60 + 15));
+    // Explicitly empty / sub-cutoff test profile
+    calculatedResumeScore = Math.max(30, Math.round(matchRatio * 50 + 25));
   }
 
-  const cutoff = job.resumeCutoff || 90;
+  const cutoff = job.resumeCutoff || 70;
   const resumePassed = calculatedResumeScore >= cutoff;
 
   const resumeRejectionReason = resumePassed

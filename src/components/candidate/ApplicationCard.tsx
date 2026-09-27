@@ -65,13 +65,20 @@ export default function ApplicationCard({ app, onOpen }: Props) {
             </div>
           </div>
         </div>
-        <span className={`shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
-          rejected ? "bg-destructive/10 text-destructive"
-          : stageKey === "offer" ? "bg-green-500/15 text-green-500"
-          : "bg-primary/10 text-primary"
-        }`}>
-          {rejected ? "Rejected" : currentLabel}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {((app as any).resume_score != null || (app as any).ai_analysis?.resume_score != null || (app as any).ai_analysis?.score != null) && (
+            <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-primary/10 text-primary border border-primary/20">
+              ATS: {(app as any).resume_score ?? (app as any).ai_analysis?.resume_score ?? (app as any).ai_analysis?.score}/100
+            </span>
+          )}
+          <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
+            rejected ? "bg-destructive/10 text-destructive"
+            : stageKey === "offer" ? "bg-green-500/15 text-green-500"
+            : "bg-primary/10 text-primary"
+          }`}>
+            {rejected ? "Rejected" : currentLabel}
+          </span>
+        </div>
       </div>
 
       {/* Hiring process for this job (from the template HR selected) */}

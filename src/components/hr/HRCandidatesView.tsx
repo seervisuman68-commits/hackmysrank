@@ -1428,7 +1428,10 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
   const scoped = jobFilter === "all" ? liveApplications : liveApplications.filter((a) => a.job_id === jobFilter);
 
   // Highest resume score first — ranking-based ordering across the board.
-  const byResumeScore = (x: Application, y: Application) => (y.resume_score ?? -1) - (x.resume_score ?? -1);
+  const byResumeScore = (x: Application, y: Application) => (
+    ((y.resume_score ?? y.ai_analysis?.resume_score ?? y.ai_analysis?.score ?? -1) as number) -
+    ((x.resume_score ?? x.ai_analysis?.resume_score ?? x.ai_analysis?.score ?? -1) as number)
+  );
   const isRejected = (a: any) => a.status === "rejected" || a.current_stage === "rejected";
   const notDeleted = scoped.filter((a) => !isDeleted(a)).slice().sort(byResumeScore);
   const activeApplications = notDeleted.filter((a) => !isRejected(a));
@@ -1797,11 +1800,15 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
                       <TableCell className="hidden xl:table-cell">₹{app.current_ctc.toLocaleString()}</TableCell>
                       <TableCell className="hidden xl:table-cell">{app.notice_period}d</TableCell>
                       <TableCell className="hidden sm:table-cell">
-                        {app.resume_score !== null ? (
-                          <span className={`font-bold ${app.resume_score >= 70 ? "text-primary" : app.resume_score >= 50 ? "text-amber-500" : "text-destructive"}`}>
-                            {app.resume_score}
-                          </span>
-                        ) : "—"}
+                        {(() => {
+                          const rScore = app.resume_score ?? app.ai_analysis?.resume_score ?? app.ai_analysis?.score ?? app.overall_score;
+                          if (rScore === null || rScore === undefined) return "—";
+                          return (
+                            <span className={`font-bold ${rScore >= 70 ? "text-primary" : rScore >= 50 ? "text-amber-500" : "text-destructive"}`}>
+                              {rScore}
+                            </span>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell className="hidden 2xl:table-cell capitalize text-xs">{getVerdict(app.ai_analysis)}</TableCell>
                       {/* Aptitude round */}
@@ -3265,9 +3272,9 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
               {(() => {
                 const keys = appStageKeys(detailsDialog);
                 const parts: { s: number | null; w: number; label: string; key: string }[] = [
-                  { s: detailsDialog.resume_score, w: 20, label: "Resume", key: "resume" },
+                  { s: detailsDialog.resume_score ?? detailsDialog.ai_analysis?.resume_score ?? detailsDialog.ai_analysis?.score, w: 20, label: "Resume", key: "resume" },
                   { s: detailsDialog.video_score, w: 20, label: "Video", key: "video_intro" },
-                  { s: detailsDialog.technical_score, w: 20, label: "Technical", key: "technical" },
+                  { s: detailsDialog.technical_score ?? detailsDialog.ai_analysis?.github_score, w: 20, label: "Technical", key: "technical" },
                   { s: detailsDialog.test_score, w: 15, label: "Aptitude", key: "aptitude" },
                   { s: (detailsDialog as any).gd_score, w: 15, label: "GD", key: "gd" },
                   { s: (detailsDialog as any).interview_score, w: 10, label: "Interview", key: "hr_interview" },
@@ -3366,15 +3373,30 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
 
                       return (
                         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
                             <span className="text-xs font-semibold text-primary uppercase tracking-wider flex items-center gap-1.5">
                               <ScanSearch className="h-4 w-4" /> ⚡ Before Interview AI Screening &amp; Links
                             </span>
-                            {wf && (
-                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/20 text-primary font-bold">
-                                {wf.overallStatus}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {wf && (
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/20 text-primary font-bold">
+                                  {wf.overallStatus}
+                                </span>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-[11px] gap-1 border-primary/40 text-primary hover:bg-primary/10"
+                                onClick={() => {
+                                  localStorage.setItem("hz_selected_app_id", detailsDialog.id);
+                                  setDetailsDialog(null);
+                                  window.dispatchEvent(new CustomEvent("hz_switch_hr_tab", { detail: "Before Interview" }));
+                                }}
+                              >
+                                <ScanSearch className="h-3 w-3" />
+                                Open in Before Interview
+                              </Button>
+                            </div>
                           </div>
 
                           {/* GitHub & Project clickable links */}

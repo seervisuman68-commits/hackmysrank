@@ -89,19 +89,20 @@ const CandidateDashboard = () => {
   const navigate = useNavigate();
 
   const fetchData = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
 
-    const { data: userData } = await supabase
-      .from("users")
-      .select("*")
-      .eq("user_id", session.user.id)
-      .maybeSingle();
+      const { data: userData } = await supabase
+        .from("users")
+        .select("*")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
 
-    if (!userData) return;
-    setUser(userData);
-    setProfileName(userData.full_name);
-    setProfilePhone(userData.phone || "");
+      if (!userData) return;
+      setUser(userData);
+      setProfileName(userData.full_name);
+      setProfilePhone(userData.phone || "");
 
     // Profile completion
     const { data: prof } = await supabase
@@ -265,10 +266,12 @@ const CandidateDashboard = () => {
       scored.sort((a, b) => (Number(b.typeFit) - Number(a.typeFit)) || (b.matchScore - a.matchScore));
       setBrowseJobs(scored);
 
+      }
+    } catch (e) {
+      console.error("Error fetching candidate dashboard data:", e);
+    } finally {
+      setLoading(false);
     }
-
-
-    setLoading(false);
   }, []);
 
   const handleOnboardingSubmit = async () => {
@@ -441,25 +444,26 @@ const CandidateDashboard = () => {
 
   // Closed = rejected (by status or stage), removed by the company, or finished (hired/selected/onboarded).
   const isClosedApp = (a: any) =>
+    !a ||
     a.status === "rejected" ||
     a.current_stage === "rejected" ||
     a.status === "deleted" ||
     Boolean(a.deleted_at) ||
     ["hired", "selected", "onboarded"].includes(a.current_stage);
-  const activeApps = applications.filter((a: any) => !isClosedApp(a));
-  const historyApps = applications.filter((a: any) => isClosedApp(a));
+  const activeApps = (applications || []).filter((a: any) => a && !isClosedApp(a));
+  const historyApps = (applications || []).filter((a: any) => a && isClosedApp(a));
 
   // Interview bucketing (also drop interviews linked to a closed application).
   const rejectedAppIds = new Set(
     historyApps
-      .filter((a: any) => a.status === "rejected" || a.current_stage === "rejected" || a.status === "deleted" || a.deleted_at)
+      .filter((a: any) => a && (a.status === "rejected" || a.current_stage === "rejected" || a.status === "deleted" || a.deleted_at))
       .map((a: any) => a.id)
   );
-  const liveInterviews = interviews.filter((i: any) => !rejectedAppIds.has(i.application_id));
+  const liveInterviews = (interviews || []).filter((i: any) => i && !rejectedAppIds.has(i.application_id));
 
-  const ongoingInterviews = liveInterviews.filter((i: any) => i.started_at && !i.ended_at && i.status !== "completed");
-  const overInterviews = liveInterviews.filter((i: any) => i.ended_at || i.status === "completed");
-  const scheduledInterviews = liveInterviews.filter((i: any) => !i.started_at && !i.ended_at && i.status !== "completed");
+  const ongoingInterviews = liveInterviews.filter((i: any) => i && i.started_at && !i.ended_at && i.status !== "completed");
+  const overInterviews = liveInterviews.filter((i: any) => i && (i.ended_at || i.status === "completed"));
+  const scheduledInterviews = liveInterviews.filter((i: any) => i && !i.started_at && !i.ended_at && i.status !== "completed");
 
   const sidebarLinks = [
     { icon: LayoutDashboard, label: "Dashboard", key: "dashboard" },
@@ -663,7 +667,9 @@ const CandidateDashboard = () => {
   };
 
   const renderApplicationQueue = (items: any[], emptyLabel: string) => {
-    const selected = journeyApp && items.find((a: any) => a.id === journeyApp.id) ? journeyApp : null;
+    const selected = journeyApp && items.find((a: any) => a.id === journeyApp.id)
+      ? journeyApp
+      : (items.length > 0 ? items[0] : null);
 
     return (
       <div className="space-y-5">
@@ -704,11 +710,18 @@ const CandidateDashboard = () => {
                         : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
                     </div>
                     <p className="text-xs text-muted-foreground truncate">{a.jobs?.companies?.company_name || "—"}</p>
-                    <p className={`text-[10px] uppercase tracking-wide mt-1.5 font-semibold ${
-                      isRej ? "text-destructive" : isHired ? "text-green-500" : "text-primary"
-                    }`}>
-                      {isRej ? "Rejected" : isHired ? "Hired" : (a.current_stage || "applied").replace(/_/g, " ")}
-                    </p>
+                    <div className="flex items-center justify-between gap-1 mt-1.5">
+                      <span className={`text-[10px] uppercase tracking-wide font-semibold ${
+                        isRej ? "text-destructive" : isHired ? "text-green-500" : "text-primary"
+                      }`}>
+                        {isRej ? "Rejected" : isHired ? "Hired" : (a.current_stage || "applied").replace(/_/g, " ")}
+                      </span>
+                      {((a as any).resume_score != null || (a as any).ai_analysis?.resume_score != null || (a as any).ai_analysis?.score != null) && (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-primary/10 text-primary border border-primary/20">
+                          ATS: {(a as any).resume_score ?? (a as any).ai_analysis?.resume_score ?? (a as any).ai_analysis?.score}/100
+                        </span>
+                      )}
+                    </div>
                   </button>
                 );
               })}

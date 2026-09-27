@@ -71,6 +71,16 @@ const HRDashboard = () => {
   const [liveActivities, setLiveActivities] = useState<{ message: string; time: string }[]>([]);
   const { toast } = useToast();
 
+  useEffect(() => {
+    const handleSwitchTab = (e: any) => {
+      if (e.detail && typeof e.detail === "string") {
+        setActiveNav(e.detail);
+      }
+    };
+    window.addEventListener("hz_switch_hr_tab", handleSwitchTab);
+    return () => window.removeEventListener("hz_switch_hr_tab", handleSwitchTab);
+  }, []);
+
   const fetchData = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
@@ -227,8 +237,11 @@ const HRDashboard = () => {
       case "Before Interview":
         return <BeforeInterviewHRPanel />;
       case "Group Discussion":
-        navigate("/gd-dashboard");
-        return null;
+        return (
+          <div className="p-8 text-center text-sm text-muted-foreground">
+            Opening Group Discussion Dashboard...
+          </div>
+        );
       case "Interviews":
         return <HRInterviewsView companyId={companyId} />;
       case "Hiring History":
@@ -414,6 +427,7 @@ const HRDashboard = () => {
               key={label}
               onClick={() => {
                 if (label === "Interview Process") { navigate("/interview-process"); return; }
+                if (label === "Group Discussion") { navigate("/gd-dashboard"); return; }
                 if (label === "Candidates") setCandidatesInitialJobId(null);
                 setActiveNav(label);
               }}

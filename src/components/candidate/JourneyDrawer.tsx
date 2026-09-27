@@ -8,6 +8,7 @@ import { normalizePipeline, enabledStages, type PipelineStage } from "@/lib/pipe
 const normalizeStageKey = (raw: string): string => {
   if (!raw) return "resume";
   if (String(raw).startsWith("round:")) return String(raw).slice(6);
+  if (["before_interview", "before-interview"].includes(raw)) return "resume";
   if (["applied", "ai_scored", "shortlisted", "resume_review"].includes(raw)) return "resume";
   if (["test_completed", "aptitude_test"].includes(raw)) return "aptitude";
   if (["video_submitted", "video_intro"].includes(raw)) return "video_intro";
@@ -35,11 +36,15 @@ export default function JourneyDrawer({ open, onClose, app, gdInfo, submittedTes
   const currentKey = normalizeStageKey(raw);
   const rejected = app.status === "rejected";
 
-  const rawStages = app.jobs?.pipeline_stages;
-  const pipeline: PipelineStage[] = rawStages && Array.isArray(rawStages) && rawStages.length > 0
+  let rawStages = app.jobs?.pipeline_stages;
+  if (typeof rawStages === "string") {
+    try {
+      rawStages = JSON.parse(rawStages);
+    } catch {}
+  }
+  const pipeline: PipelineStage[] = Array.isArray(rawStages) && rawStages.length > 0
     ? enabledStages(normalizePipeline(rawStages))
-    : [];
-
+    : defaultPipeline();
 
   const currentIdx = pipeline.findIndex((s) => s.key === currentKey);
 
@@ -91,8 +96,9 @@ export default function JourneyDrawer({ open, onClose, app, gdInfo, submittedTes
                         size="sm"
                         onClick={() => {
                           onClose();
+                          localStorage.setItem("hz_selected_app_id", app.id);
                           window.dispatchEvent(new CustomEvent("hz_switch_candidate_tab", { detail: "before-interview" }));
-                          navigate("/candidate-dashboard?tab=before-interview");
+                          navigate(`/candidate-dashboard?tab=before-interview&appId=${app.id}`);
                         }}
                         className="mt-2 h-7 px-3 text-xs bg-primary text-primary-foreground gap-1.5"
                       >

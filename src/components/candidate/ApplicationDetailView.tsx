@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, Lock, ExternalLink, ArrowLeft, Building2, MapPin, Briefcase, Calendar, FileText, XCircle, Trophy, Upload } from "lucide-react";
+import { CheckCircle2, Clock, Lock, ExternalLink, ArrowLeft, Building2, MapPin, Briefcase, Calendar, FileText, XCircle, Trophy, Upload, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
@@ -62,8 +62,9 @@ interface Props {
 export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBack }: Props) {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const raw = app.current_stage;
+  const raw = app?.current_stage || "applied";
   const stage = normalize(raw);
+  const appId = app?.id || "";
 
   // Details HR attached to custom rounds (brief PDF, live link, instructions)
   const [briefs, setBriefs] = useState<Record<string, any>>({});
@@ -72,24 +73,29 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
   const pendingStage = useRef<string | null>(null);
 
   const loadBriefs = async () => {
-    const { data } = await (supabase as any)
-      .from("round_briefs")
-      .select("*")
-      .eq("application_id", app.id);
-    const map: Record<string, any> = {};
-    (data || []).forEach((b: any) => { map[b.stage_key] = b; });
-    setBriefs(map);
+    if (!appId) return;
+    try {
+      const { data } = await (supabase as any)
+        .from("round_briefs")
+        .select("*")
+        .eq("application_id", appId);
+      const map: Record<string, any> = {};
+      (data || []).forEach((b: any) => { map[b.stage_key] = b; });
+      setBriefs(map);
+    } catch (e) {
+      console.warn("Could not load briefs", e);
+    }
   };
 
   useEffect(() => {
-    loadBriefs();
+    if (appId) loadBriefs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.id]);
+  }, [appId]);
 
   useLiveData(
-    [{ table: "round_briefs", filter: `application_id=eq.${app.id}` }],
+    appId ? [{ table: "round_briefs", filter: `application_id=eq.${appId}` }] : [],
     () => loadBriefs(),
-    { key: `app-briefs-${app.id}`, enabled: !!app.id },
+    { key: `app-briefs-${appId || "none"}`, enabled: !!appId },
   );
 
   const handleSubmissionFile = async (file: File) => {
@@ -118,25 +124,40 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
     }
   };
 
+  if (!app) {
+    return (
+      <div className="rounded-2xl border border-dashed border-border bg-card/40 p-10 text-center">
+        <Briefcase className="h-10 w-10 mx-auto mb-3 opacity-40" />
+        <p className="text-sm text-muted-foreground">Select an application from the inbox above to view full details.</p>
+      </div>
+    );
+  }
+
   const job = app.jobs || {};
   const company = job.companies || {};
 
   // Rounds come from the interview-process template HR picked for THIS job.
-  // No hardcoded fallback — if HR hasn't published a process we show nothing.
-  const rawStages = job.pipeline_stages;
-  const STAGES: PipelineStage[] = Array.isArray(rawStages) && rawStages.length > 0
-    ? enabledStages(normalizePipeline(rawStages))
-    : [];
-
+  let parsedStages = job.pipeline_stages;
+  if (typeof parsedStages === "string") {
+    try {
+      parsedStages = JSON.parse(parsedStages);
+    } catch {}
+  }
+  const STAGES: PipelineStage[] = Array.isArray(parsedStages) && parsedStages.length > 0
+    ? enabledStages(normalizePipeline(parsedStages))
+    : defaultPipeline();
 
   // A round counts as finished when the candidate actually produced a result
   // for it, regardless of what current_stage string the backend last wrote.
   const stageDone = (s: PipelineStage): boolean => {
+    if (!s) return false;
+    const rScore = app.resume_score ?? app.ai_analysis?.resume_score ?? app.ai_analysis?.score;
+    const gScore = app.technical_score ?? app.ai_analysis?.github_score;
     switch (s.type) {
-      case "screening": return app.resume_score != null;
+      case "screening": return rScore != null;
       case "test": return app.test_score != null;
       case "video": return app.video_score != null || !!app.video_url;
-      case "technical": return app.technical_score != null;
+      case "technical": return gScore != null;
       case "interview": return app.interview_score != null;
       default: return false;
     }
@@ -147,13 +168,11 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
   // round right after the last one with a recorded result.
   let lastDone = -1;
   STAGES.forEach((s, i) => { if (stageDone(s)) lastDone = i; });
-  const currentIdx = rawIdx >= 0 ? rawIdx : Math.min(lastDone + 1, STAGES.length - 1);
+  const currentIdx = rawIdx >= 0 ? rawIdx : Math.max(0, Math.min(lastDone + 1, Math.max(0, STAGES.length - 1)));
   const rejected = app.status === "rejected";
   const hired = ["hired", "selected", "onboarded"].includes(raw) || app.status === "hired";
   const rejectedStage = app.rejection_stage ? normalize(app.rejection_stage) : null;
   const rejectionIdx = rejectedStage ? STAGES.findIndex((s) => s.key === rejectedStage) : -1;
-
-
 
   return (
     <div className="space-y-6">
@@ -180,7 +199,7 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
               <span className="flex items-center gap-1.5"><Building2 className="h-4 w-4" /> {company.company_name || "—"}</span>
               {job.location && <span className="flex items-center gap-1.5"><MapPin className="h-4 w-4" /> {job.location}</span>}
               {job.department && <span className="flex items-center gap-1.5"><Briefcase className="h-4 w-4" /> {job.department}</span>}
-              <span className="flex items-center gap-1.5"><Calendar className="h-4 w-4" /> Applied {new Date(app.applied_at).toLocaleDateString()}</span>
+              <span className="flex items-center gap-1.5"><Calendar className="h-4 w-4" /> Applied {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : "Recently"}</span>
             </div>
           </div>
           {job.salary_min && job.salary_max && (
@@ -196,17 +215,20 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
         {/* Score chips — only for rounds that exist in this job's template */}
         {(() => {
           const scoreFor = (s: PipelineStage): number | null | undefined => {
-            if (s.type === "screening") return app.resume_score;
+            const rScore = app.resume_score ?? app.ai_analysis?.resume_score ?? app.ai_analysis?.score;
+            if (s.key === "before_interview") return rScore ?? app.ai_analysis?.github_score;
+            if (s.type === "screening") return rScore;
             if (s.type === "test") return app.test_score;
             if (s.type === "video") return app.video_score;
-            if (s.type === "technical") return app.technical_score;
+            if (s.type === "technical") return app.technical_score ?? app.ai_analysis?.github_score;
             if (s.type === "interview") return app.interview_score;
             return undefined;
           };
+          const rScore = app.resume_score ?? app.ai_analysis?.resume_score ?? app.ai_analysis?.score;
           const chips = STAGES
             .map((s) => ({ label: s.label, v: scoreFor(s) }))
             .filter((c) => c.v !== undefined)
-            .concat([{ label: "Overall", v: app.overall_score }]);
+            .concat([{ label: "Overall", v: app.overall_score ?? rScore }]);
           return (
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-2 mt-5">
               {chips.map((s) => (
@@ -304,8 +326,9 @@ export default function ApplicationDetailView({ app, gdInfo, submittedTest, onBa
                       <Button
                         size="sm"
                         onClick={() => {
+                          localStorage.setItem("hz_selected_app_id", app.id);
                           window.dispatchEvent(new CustomEvent("hz_switch_candidate_tab", { detail: "before-interview" }));
-                          navigate("/candidate-dashboard?tab=before-interview");
+                          navigate(`/candidate-dashboard?tab=before-interview&appId=${app.id}`);
                         }}
                         className="mt-3 h-8 px-3 text-xs bg-primary text-primary-foreground gap-1.5"
                       >

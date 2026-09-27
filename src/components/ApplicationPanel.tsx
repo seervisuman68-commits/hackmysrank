@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { Upload, FileText, Image, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, Image, CheckCircle2, GitBranch } from "lucide-react";
 import {
   evaluateAndSubmitApplication,
   evaluateAndSubmitApplicationWithGemini,
@@ -71,6 +71,10 @@ const ApplicationPanel = ({ open, onOpenChange, job, onSuccess }: ApplicationPan
       if (!prof) return;
       setPrefill(prof);
 
+      if (prof.github_url) {
+        setGithubUrl(prof.github_url);
+      }
+
       const stage = localStorage.getItem(`hz_career_stage_${user.id}`);
       const exps = (prof.experiences as any[]) || [];
       const derivedStatus: EmploymentStatus =
@@ -105,6 +109,8 @@ const ApplicationPanel = ({ open, onOpenChange, job, onSuccess }: ApplicationPan
     setGradYear("");
     setInternshipRole("");
     setCoverLetter("");
+    setGithubUrl("");
+    setProjectDetails("");
     setResumeFile(null);
     setPhotoFile(null);
     setPreferredLocation("");
@@ -175,6 +181,11 @@ const ApplicationPanel = ({ open, onOpenChange, job, onSuccess }: ApplicationPan
       .maybeSingle();
     const builtResume = (profile as any)?.built_resume;
     const useBuilt = !!(profile as any)?.use_built_resume && !!builtResume;
+
+    // Persist entered GitHub URL to profile if provided
+    if (githubUrl && session?.user?.id) {
+      void supabase.from("candidate_profiles").update({ github_url: githubUrl.trim() }).eq("user_id", session.user.id);
+    }
 
     // Upload resume (private bucket -> store object path, not public URL)
     if (resumeFile) {
@@ -407,13 +418,25 @@ Portfolio: ${(profile as any)?.portfolio_url || "https://portfolio.dev"}
     const initialStage = evaluatedApp.currentStage === "rejected" ? "rejected" : "before_interview";
     const initialStatus = evaluatedApp.currentStage === "rejected" ? "rejected" : "active";
 
-    // Update the application record with the analyzed ATS resume score and stage
+    // Update the application record with the analyzed ATS resume score, AI metadata, and stage
     await supabase
       .from("applications")
       .update({
         resume_score: evaluatedApp.resumeScore,
         current_stage: initialStage,
         status: initialStatus,
+        ai_analysis: {
+          resume_score: evaluatedApp.resumeScore,
+          authenticity_score: evaluatedApp.authenticityPercentage,
+          github_score: evaluatedApp.githubScore,
+          matched_skills: evaluatedApp.matchedKeywords || [],
+          missing_skills: evaluatedApp.atsBreakdown?.missingKeywords || [],
+          feedback: evaluatedApp.resumeFeedback || "",
+          ats_breakdown: evaluatedApp.atsBreakdown || {},
+          hr_evidence: evaluatedApp.hrEvidence || {},
+          summary: evaluatedApp.resumeTextSummary || "",
+          project_summary: evaluatedApp.projectArchitectureSummary || "",
+        },
       })
       .eq("id", insertedApplication.id);
 
@@ -643,37 +666,38 @@ Portfolio: ${(profile as any)?.portfolio_url || "https://portfolio.dev"}
 
 
           {/* GitHub & Project Links for AI Candidate Analyzer */}
-          <div className="p-4 rounded-2xl bg-primary/5 border border-primary/20 space-y-3">
+          <div className="p-4 rounded-2xl bg-primary/10 border-2 border-primary/30 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-primary uppercase tracking-wider">
-                ⚡ AI Candidate Analyzer Signals
+              <span className="text-xs font-semibold text-primary uppercase tracking-wider flex items-center gap-1.5">
+                <GitBranch className="w-4 h-4 text-primary" /> Before Interview Screening Signals
               </span>
-              <span className="text-[10px] text-muted-foreground">Scanned Before Interview</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/20 text-primary font-bold">Required</span>
             </div>
             <div>
-              <label className="block text-xs font-medium text-foreground mb-1">
-                GitHub Profile or Key Repository URL
+              <label className="block text-xs font-semibold text-foreground mb-1">
+                GitHub Profile or Project Repository URL *
               </label>
               <input
                 type="url"
                 value={githubUrl}
                 onChange={(e) => setGithubUrl(e.target.value)}
-                placeholder="https://github.com/username/project"
+                placeholder="https://github.com/username/project-repo"
+                required
                 className={inputClass}
               />
-              <p className="text-[11px] text-muted-foreground mt-0.5">
-                AI checks code structure, technology alignment, and human code authenticity.
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                ✨ <strong>Step 1: Before Interview Screening</strong> scans this repository for code authenticity (&ge;70%), generates your <strong>5 personalized technical MCQs</strong>, and configures your <strong>2 adaptive coding challenges</strong>.
               </p>
             </div>
             <div>
               <label className="block text-xs font-medium text-foreground mb-1">
-                Key Project Live Link / Architecture Summary
+                Key Project Live Link / Architecture Summary (Optional)
               </label>
               <input
                 type="text"
                 value={projectDetails}
                 onChange={(e) => setProjectDetails(e.target.value)}
-                placeholder="e.g. https://project.dev · Fullstack CRDT whiteboard with WebSockets"
+                placeholder="e.g. https://project.dev · Fullstack system architecture"
                 className={inputClass}
               />
             </div>

@@ -170,7 +170,7 @@ function CompareCandidatesInner() {
         candidates: apps.map((a) => ({
           name: a.candidate_name,
           overall: a.overall_score,
-          resume_score: a.resume_score,
+          resume_score: a.resume_score ?? a.ai_analysis?.resume_score,
           aptitude_score: a.test_score,
           video_score: a.video_score,
           technical_score: a.technical_score,
@@ -267,17 +267,20 @@ function CompareCandidatesInner() {
     },
     {
       label: "Resume Score",
-      render: (a) => (
-        <div className="space-y-2">
-          <div className="font-bold text-lg" style={{ color: scoreColor(a.resume_score) }}>
-            {a.resume_score ?? "–"}/100
+      render: (a) => {
+        const rScore = a.resume_score ?? a.ai_analysis?.resume_score;
+        return (
+          <div className="space-y-2">
+            <div className="font-bold text-lg" style={{ color: scoreColor(rScore) }}>
+              {rScore ?? "–"}/100
+            </div>
+            <BarFill value={rScore} />
+            <div className="text-xs text-muted-foreground">
+              Matched: {matchedSkills(a).length} · Missing: {missingSkills(a).length}
+            </div>
           </div>
-          <BarFill value={a.resume_score} />
-          <div className="text-xs text-muted-foreground">
-            Matched: {matchedSkills(a).length} · Missing: {missingSkills(a).length}
-          </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       label: "Aptitude Test",

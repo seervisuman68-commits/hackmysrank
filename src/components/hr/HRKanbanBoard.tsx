@@ -77,7 +77,7 @@ export default function HRKanbanBoard({ apps, onMove, onView, onMessage }: Props
     return apps.filter((a) => {
       if (q && !(a.candidate_name?.toLowerCase().includes(q) || a.candidate_email?.toLowerCase().includes(q))) return false;
       if (jobFilter !== "all" && a.job_id !== jobFilter) return false;
-      const score = a.resume_score ?? 0;
+      const score = a.resume_score ?? (a as any).ai_analysis?.resume_score ?? (a as any).ai_analysis?.score ?? 0;
       if (score < scoreRange[0] || score > scoreRange[1]) return false;
       if (dateFilter !== "all") {
         const days = dateFilter === "7" ? 7 : dateFilter === "30" ? 30 : 90;
@@ -209,9 +209,14 @@ export default function HRKanbanBoard({ apps, onMove, onView, onMessage }: Props
                         </div>
 
                         <div className="mt-2 flex items-center gap-2 flex-wrap">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${scoreColor(app.resume_score)}`}>
-                            AI {app.resume_score ?? "—"}
-                          </span>
+                          {(() => {
+                            const rScore = app.resume_score ?? (app as any).ai_analysis?.resume_score ?? (app as any).ai_analysis?.score;
+                            return (
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${scoreColor(rScore)}`}>
+                                AI {rScore ?? "—"}
+                              </span>
+                            );
+                          })()}
                           <span className="text-[10px] text-muted-foreground">
                             {new Date(app.applied_at).toLocaleDateString()}
                           </span>

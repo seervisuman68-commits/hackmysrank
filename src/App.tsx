@@ -44,6 +44,7 @@ import CompareCandidates from "./pages/CompareCandidates";
 import InterviewRoom from "./pages/InterviewRoom";
 import GDRoom from "./pages/GDRoom";
 import { applyStoredTheme } from "./components/ThemeToggle";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 applyStoredTheme();
 
@@ -54,8 +55,9 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
-        <Routes>
+      <ErrorBoundary fallbackTitle="HireZap Application View" fallbackDescription="An unexpected error occurred. Click reload to refresh the view.">
+        <BrowserRouter>
+          <Routes>
           <Route path="/" element={<Landing />} />
           {/* Google sign-in and email signup both go straight to candidate flow */}
           <Route path="/select-role" element={<Navigate to="/candidate-dashboard" replace />} />
@@ -245,7 +247,8 @@ const App = () => (
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
-      <Analytics />
+    </ErrorBoundary>
+    <Analytics />
     </TooltipProvider>
   </QueryClientProvider>
 );
