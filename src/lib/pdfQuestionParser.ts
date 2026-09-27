@@ -1,6 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getGeminiApiKey } from "@/lib/geminiResumeAnalyzer";
-import { generateComprehensiveAptitudeQuestions } from "@/lib/assessmentGenerator";
+import { generateComprehensiveAptitudeQuestions, generateComprehensiveTechnicalQuestions } from "@/lib/assessmentGenerator";
 
 export interface ParsedMCQ {
   question_number: number;
@@ -306,3 +306,157 @@ Output ONLY raw JSON.`;
     sections,
   };
 }
+
+export interface ParsedDSAProblem {
+  problem_number: number;
+  title: string;
+  description: string;
+  difficulty: string;
+  time_minutes: number;
+  expected_approach: string;
+  test_cases: string[];
+  sample_input?: string;
+  sample_output?: string;
+  hint?: string;
+}
+
+export interface ParsedCodingTask {
+  task_number: number;
+  title: string;
+  description: string;
+  difficulty: string;
+  time_minutes: number;
+  tech_stack: string;
+  requirements?: string[];
+}
+
+export interface ParsedTechnicalMCQ {
+  question_number: number;
+  question: string;
+  options: string[];
+  correct_answer: string;
+  difficulty: string;
+  topic: string;
+  explanation?: string;
+}
+
+export interface ParsedTechnicalResult {
+  dsa: ParsedDSAProblem[];
+  coding: ParsedCodingTask[];
+  mcq: ParsedTechnicalMCQ[];
+}
+
+/**
+ * Parses a file into technical challenges: DSA problems, Coding tasks, and Technical MCQs.
+ * Has full fallback to ensure zero upload failures.
+ */
+export async function parseTechnicalFile(
+  file: File,
+  jobInfo?: { jobId?: string; jobTitle?: string; skills?: string[] }
+): Promise<ParsedTechnicalResult> {
+  const apiKey = getGeminiApiKey();
+  const jobTitle = jobInfo?.jobTitle || "Software Engineer";
+  const skills = jobInfo?.skills || [];
+
+  // 1. Try Gemini API directly if key is available
+  if (apiKey) {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = arrayBufferToBase64(arrayBuffer);
+      const mime = file.type || "application/pdf";
+
+      const prompt = `You are an expert technical interviewer and question paper creator.
+Extract or generate structured technical assessment challenges from this file for a "${jobTitle}" role.
+Return a valid JSON object with:
+1. "dsa": array of 2 DSA problems (with title, description, difficulty, time_minutes, expected_approach, test_cases, sample_input, sample_output, hint)
+2. "coding": array of 1 real-world coding architecture/implementation task (with title, description, difficulty, time_minutes, tech_stack, requirements)
+3. "mcq": array of 5 technical MCQs (with question, options array of 4, correct_answer 'A'|'B'|'C'|'D', difficulty, topic, explanation)
+
+Strict JSON output format:
+{
+  "dsa": [
+    {
+      "problem_number": 1,
+      "title": "Problem Title",
+      "description": "Full description",
+      "difficulty": "medium",
+      "time_minutes": 25,
+      "expected_approach": "Approach here",
+      "test_cases": ["[1, 2] -> 3"],
+      "sample_input": "sample",
+      "sample_output": "output",
+      "hint": "hint"
+    }
+  ],
+  "coding": [
+    {
+      "task_number": 1,
+      "title": "Task Title",
+      "description": "Full description",
+      "difficulty": "medium",
+      "time_minutes": 30,
+      "tech_stack": "TypeScript / Python",
+      "requirements": ["Req 1", "Req 2"]
+    }
+  ],
+  "mcq": [
+    {
+      "question_number": 1,
+      "question": "Question text?",
+      "options": ["A", "B", "C", "D"],
+      "correct_answer": "A",
+      "difficulty": "medium",
+      "topic": "System Design",
+      "explanation": "Why A is correct"
+    }
+  ]
+}
+Output ONLY raw JSON.`;
+
+      const candidateModels = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"];
+      for (const model of candidateModels) {
+        try {
+          const resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      { text: prompt },
+                      { inline_data: { mime_type: mime, data: base64 } },
+                    ],
+                  },
+                ],
+              }),
+            }
+          );
+
+          if (resp.ok) {
+            const json = await resp.json();
+            const text = (json?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text).join("\n");
+            const cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && (parsed.dsa || parsed.coding || parsed.mcq)) {
+              return {
+                dsa: Array.isArray(parsed.dsa) ? parsed.dsa : [],
+                coding: Array.isArray(parsed.coding) ? parsed.coding : [],
+                mcq: Array.isArray(parsed.mcq) ? parsed.mcq : [],
+              };
+            }
+          }
+        } catch (e) {
+          console.warn(`Direct Gemini ${model} technical parse error:`, e);
+        }
+      }
+    } catch (directErr) {
+      console.warn("Direct technical parse error:", directErr);
+    }
+  }
+
+  // 2. Fallback to comprehensive technical generator tailored to the job
+  return generateComprehensiveTechnicalQuestions(jobTitle, skills);
+}
+

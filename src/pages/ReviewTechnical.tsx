@@ -11,7 +11,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Check, Pencil, RefreshCw, Trash2, Plus, FileUp, CheckCircle2, Clock } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
 import { sendStageEmail } from "@/lib/stageEmail";
-import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
+import { parseTechnicalFile } from "@/lib/pdfQuestionParser";
 
 interface DSAProblem {
   problem_number: number;
@@ -365,24 +365,54 @@ const ReviewTechnical = () => {
       return;
     }
     setUploadingPdf(true);
-    toast({ title: "📄 Processing...", description: "Extracting questions from your file." });
+    toast({ title: "📄 Processing...", description: "Extracting DSA problems, coding tasks & MCQs from your file." });
     try {
-      const result = await parsePdfQuestions(file, {
+      const result = await parseTechnicalFile(file, {
         jobId: assessment?.job_id,
-        jobTitle: "Software Engineer",
+        jobTitle: jobTitle || "Software Engineer",
       });
 
-      const raw = result.questions;
-      if (!raw || raw.length === 0) throw new Error("No questions could be extracted from this file.");
+      const parsedDsa = result.dsa || [];
+      const parsedCoding = result.coding || [];
+      const parsedMcq = result.mcq || [];
+
+      if (parsedDsa.length === 0 && parsedCoding.length === 0 && parsedMcq.length === 0) {
+        throw new Error("No technical questions could be extracted from this file.");
+      }
+
+      const newDsa = [...dsaProblems];
+      parsedDsa.forEach((p: any) => {
+        newDsa.push({
+          problem_number: newDsa.length + 1,
+          title: p.title || "DSA Problem",
+          description: p.description || "",
+          difficulty: p.difficulty || "medium",
+          time_minutes: Number(p.time_minutes) || 30,
+          expected_approach: p.expected_approach || "",
+          test_cases: Array.isArray(p.test_cases) ? p.test_cases : [],
+        });
+      });
+
+      const newCoding = [...codingTasks];
+      parsedCoding.forEach((t: any) => {
+        newCoding.push({
+          task_number: newCoding.length + 1,
+          title: t.title || "Coding Challenge",
+          description: t.description || "",
+          difficulty: t.difficulty || "medium",
+          time_minutes: Number(t.time_minutes) || 45,
+          tech_stack: t.tech_stack || "TypeScript / React",
+        });
+      });
 
       const newMcq = [...mcqQuestions];
-      raw.forEach((qq: any) => {
+      parsedMcq.forEach((qq: any) => {
         const options = Array.isArray(qq.options)
           ? qq.options
           : [qq.option_a, qq.option_b, qq.option_c, qq.option_d];
         newMcq.push({
           question_number: newMcq.length + 1,
-          question: qq.question,
+          question: qq.question || "Question",
           options: options.map((o: any) => String(o ?? "")),
           correct_answer: String(qq.correct_answer || "A").toUpperCase(),
           difficulty: String(qq.difficulty || "medium").toLowerCase(),
@@ -390,10 +420,16 @@ const ReviewTechnical = () => {
         });
       });
 
-      const added = newMcq.length - mcqQuestions.length;
+      setDsaProblems(newDsa);
+      setCodingTasks(newCoding);
       setMcqQuestions(newMcq);
-      await saveQuestions(dsaProblems, codingTasks, newMcq);
-      toast({ title: "✅ Questions Added!", description: `${added} questions extracted from your file.` });
+
+      await saveQuestions(newDsa, newCoding, newMcq);
+      const totalExtracted = parsedDsa.length + parsedCoding.length + parsedMcq.length;
+      toast({
+        title: "✅ Technical Questions Added!",
+        description: `Added ${parsedDsa.length} DSA, ${parsedCoding.length} Coding, and ${parsedMcq.length} MCQs.`,
+      });
     } catch (e: any) {
       console.error("ReviewTechnical PDF parsing error:", e);
       toast({ title: "Upload failed", description: e.message || "Failed to parse file", variant: "destructive" });

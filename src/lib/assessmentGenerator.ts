@@ -679,7 +679,7 @@ export async function generateAndSaveTechnicalAssessment(
   try {
     const { data: job } = await supabase
       .from("jobs")
-      .select("title, skills_required, company_id")
+      .select("title, skills_required, company_id, pipeline_stages")
       .eq("id", jobId)
       .maybeSingle();
 
@@ -687,6 +687,46 @@ export async function generateAndSaveTechnicalAssessment(
       if (job.title) jobTitle = job.title;
       if (Array.isArray(job.skills_required)) requiredSkills = job.skills_required;
       if (job.company_id && !jobCompanyId) jobCompanyId = job.company_id;
+
+      // Check if job has pre-uploaded technical questions
+      if (job.pipeline_stages) {
+        const rawStages = Array.isArray(job.pipeline_stages)
+          ? job.pipeline_stages
+          : (job.pipeline_stages as any).stages || [];
+        const techStage = rawStages.find(
+          (s: any) => s.type === "technical" || s.key === "technical_round" || s.key === "technical_test"
+        );
+        const preTech = techStage?.config?.technical_questions || (job as any).technical_questions;
+
+        if (preTech && (preTech.dsa?.length > 0 || preTech.coding?.length > 0 || preTech.mcq?.length > 0)) {
+          const { data: preAssessment, error: preErr } = await supabase
+            .from("assessments")
+            .insert({
+              job_id: jobId,
+              company_id: jobCompanyId || null,
+              application_id: applicationId,
+              questions: preTech as any,
+              type: "technical",
+              status: "approved",
+              hr_approved: true,
+              manager_approved: true,
+              hr_approved_at: new Date().toISOString(),
+              manager_approved_at: new Date().toISOString(),
+              approved_at: new Date().toISOString(),
+              created_by: createdBy || null,
+            })
+            .select("id")
+            .single();
+
+          if (preAssessment && !preErr) {
+            return {
+              assessmentId: preAssessment.id,
+              status: "approved",
+              source: "pre_uploaded",
+            };
+          }
+        }
+      }
     }
   } catch (e) {
     console.warn("Could not fetch job for technical assessment:", e);

@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { Briefcase, MapPin, DollarSign, Clock, Zap, X, Target, FileText, Upload, CheckCircle, FileStack, Save, GitBranch, Layers } from "lucide-react";
+import { Briefcase, MapPin, DollarSign, Clock, Zap, X, Target, FileText, Upload, CheckCircle, FileStack, Save, GitBranch, Layers, Code2, Terminal, Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import PdfQuestionsModal, { ExtractedQuestion } from "./PdfQuestionsModal";
+import TechnicalQuestionsModal from "./TechnicalQuestionsModal";
 import { normalizePipeline, defaultPipeline, PipelineStage } from "@/lib/pipeline";
 import { Workflow } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
 import { addWorkflowJob } from "@/lib/hiringWorkflowEngine";
-import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
+import { parsePdfQuestions, parseTechnicalFile, ParsedTechnicalResult } from "@/lib/pdfQuestionParser";
 
 export interface JobTemplateRow {
   id: string;
@@ -78,6 +79,18 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
   const [previewOpen, setPreviewOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const questionCount = confirmedQuestions.length;
+
+  // Technical Round Questions state
+  const [techFile, setTechFile] = useState<File | null>(null);
+  const [parsingTech, setParsingTech] = useState(false);
+  const [extractedTech, setExtractedTech] = useState<ParsedTechnicalResult>({ dsa: [], coding: [], mcq: [] });
+  const [confirmedTech, setConfirmedTech] = useState<ParsedTechnicalResult | null>(null);
+  const [techModalOpen, setTechModalOpen] = useState(false);
+  const techFileInputRef = useRef<HTMLInputElement | null>(null);
+  const techCount = confirmedTech
+    ? (confirmedTech.dsa?.length || 0) + (confirmedTech.coding?.length || 0) + (confirmedTech.mcq?.length || 0)
+    : 0;
+
   const [form, setForm] = useState({ ...emptyForm });
 
   // Template state
@@ -232,6 +245,7 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
 
 
   const triggerFilePicker = () => fileInputRef.current?.click();
+  const triggerTechFilePicker = () => techFileInputRef.current?.click();
 
   const handlePreviewUseAll = (qs: ExtractedQuestion[]) => {
     setConfirmedQuestions(qs);
@@ -254,6 +268,51 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
     setPdfFile(null);
     setExtractedQuestions([]);
     setConfirmedQuestions([]);
+  };
+
+  const handleTechnicalUpload = async (file: File) => {
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      toast({ title: "File too large", description: "File must be under 15MB.", variant: "destructive" });
+      return;
+    }
+
+    setTechFile(file);
+    setParsingTech(true);
+    toast({ title: "🤖 Analyzing Technical File...", description: "Extracting DSA problems, coding tasks, and technical MCQs." });
+
+    try {
+      const result = await parseTechnicalFile(file, {
+        jobTitle: form.title || "Software Engineer",
+        skills: form.skills,
+      });
+
+      setExtractedTech(result);
+      setTechModalOpen(true);
+      const total = (result.dsa?.length || 0) + (result.coding?.length || 0) + (result.mcq?.length || 0);
+      toast({ title: `✅ ${total} Technical Challenges Extracted!`, description: "Review and configure questions for technical round." });
+    } catch (err: any) {
+      console.error("Technical file parsing error:", err);
+      toast({ title: "File parsing error", description: err?.message || "Could not parse file", variant: "destructive" });
+      setTechFile(null);
+    }
+    setParsingTech(false);
+  };
+
+  const handleTechConfirm = (data: ParsedTechnicalResult) => {
+    setConfirmedTech(data);
+    setTechModalOpen(false);
+    const count = (data.dsa?.length || 0) + (data.coding?.length || 0) + (data.mcq?.length || 0);
+    toast({
+      title: `✅ ${count} Technical Questions Attached`,
+      description: "These questions will be automatically used when candidates reach the Technical Round.",
+    });
+  };
+
+  const removeTech = () => {
+    setTechFile(null);
+    setExtractedTech({ dsa: [], coding: [], mcq: [] });
+    setConfirmedTech(null);
   };
 
   // Convert flat MCQ array → legacy {sections:[{name, questions:[{question,options,correct_answer,...}]}]}
@@ -301,6 +360,9 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
     setPdfFile(null);
     setExtractedQuestions([]);
     setConfirmedQuestions([]);
+    setTechFile(null);
+    setExtractedTech({ dsa: [], coding: [], mcq: [] });
+    setConfirmedTech(null);
     setSelectedTemplateId("");
     setSaveAsTemplate(false);
     setTemplateName("");
@@ -349,6 +411,18 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
       return;
     }
 
+    const updatedPipeline = pipelineStages.map((stage) => {
+      if ((stage.type === "technical" || stage.key === "technical_round" || stage.key === "technical_test") && confirmedTech) {
+        return {
+          ...stage,
+          config: {
+            ...stage.config,
+            technical_questions: confirmedTech,
+          },
+        };
+      }
+      return stage;
+    });
 
     const { data: insertedJob, error } = await supabase.from("jobs").insert({
       title: form.title,
@@ -370,7 +444,7 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
       resume_cutoff: form.resumeCutoff,
       aptitude_questions: confirmedQuestions.length ? toLegacyFormat(confirmedQuestions) : null,
       pipeline_template_id: processTemplateId || null,
-      pipeline_stages: JSON.parse(JSON.stringify(pipelineStages)),
+      pipeline_stages: JSON.parse(JSON.stringify(updatedPipeline)),
     } as any).select("id").maybeSingle();
 
     if (error) {
@@ -770,6 +844,102 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
             onClose={() => setPreviewOpen(false)}
             onUseAll={handlePreviewUseAll}
             onReupload={handlePreviewReupload}
+          />
+
+          {/* Technical Round Questions File Upload */}
+          <div className="rounded-lg border border-border bg-secondary/30 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Code2 className="h-4 w-4 text-indigo-500" />
+              <label className="text-sm font-medium text-foreground">Technical Round Questions (DSA & Coding)</label>
+            </div>
+            <p className="text-[11px] text-muted-foreground mb-3">
+              Upload a PDF, DOCX, or text file with technical tasks, DSA problems, or MCQs. AI will structure and prepare them for the technical round.
+            </p>
+
+            <input
+              ref={techFileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,application/pdf"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleTechnicalUpload(f);
+                e.target.value = "";
+              }}
+            />
+
+            {!techFile && !confirmedTech && !parsingTech && (
+              <button
+                type="button"
+                onClick={triggerTechFilePicker}
+                className="w-full flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border hover:border-indigo-500/50 bg-secondary/20 p-6 cursor-pointer transition-colors"
+              >
+                <Upload className="h-8 w-8 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Click to upload Technical Questions</span>
+                <span className="text-[10px] text-muted-foreground">Max 15MB • PDF, DOCX, TXT</span>
+              </button>
+            )}
+
+            {parsingTech && (
+              <div className="flex items-center gap-3 rounded-lg bg-indigo-500/5 border border-indigo-500/20 p-4">
+                <Loader2 className="h-5 w-5 text-indigo-500 animate-spin" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">Analyzing Technical Challenges...</p>
+                  <p className="text-[11px] text-muted-foreground">AI is structuring DSA problems, coding tasks & MCQs</p>
+                </div>
+              </div>
+            )}
+
+            {confirmedTech && !parsingTech && (
+              <div className="rounded-lg bg-indigo-500/5 border border-indigo-500/20 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-indigo-500" />
+                    <span className="text-sm font-medium text-foreground">{techCount} technical challenges ready</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTechModalOpen(true)}
+                      className="text-[11px] font-medium text-indigo-500 hover:underline"
+                    >
+                      Review & Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={removeTech}
+                      className="text-muted-foreground hover:text-destructive transition-colors"
+                      aria-label="Remove"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {techFile?.name || "Technical Challenges Attached"} • ({confirmedTech.dsa?.length || 0} DSA, {confirmedTech.coding?.length || 0} Coding, {confirmedTech.mcq?.length || 0} MCQs)
+                </p>
+              </div>
+            )}
+
+            {!parsingTech && !techFile && !confirmedTech && (
+              <p className="text-[10px] text-muted-foreground mt-2 italic">
+                Optional — If no file is uploaded, AI will automatically generate DSA and coding tasks for candidates in the Technical Round.
+              </p>
+            )}
+          </div>
+
+          <TechnicalQuestionsModal
+            open={techModalOpen}
+            technicalData={extractedTech}
+            onClose={() => setTechModalOpen(false)}
+            onConfirm={handleTechConfirm}
+            onReupload={() => {
+              setTechModalOpen(false);
+              setExtractedTech({ dsa: [], coding: [], mcq: [] });
+              setConfirmedTech(null);
+              setTechFile(null);
+              setTimeout(triggerTechFilePicker, 100);
+            }}
           />
 
           {/* 1. Resume Match Cutoff */}
