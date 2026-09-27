@@ -148,10 +148,12 @@ const CandidateDashboard = () => {
       setExperienceYears(parsedExp.years || 0);
     }
 
+    const candidateIds = [userData.id, session.user.id].filter(Boolean);
+
     const { data: apps } = await supabase
       .from("applications")
       .select("*, jobs(title, company_id, employment_type, work_type, location, pipeline_stages, companies(company_name))")
-      .eq("candidate_id", userData.id)
+      .in("candidate_id", candidateIds)
       .order("applied_at", { ascending: false });
 
     if (apps) {
@@ -166,32 +168,37 @@ const CandidateDashboard = () => {
           .in("application_id", appIds);
         setSubmittedTestAppIds(new Set((answerRows || []).map((r: any) => r.application_id)));
       }
+    } else {
+      setApplications([]);
     }
 
     const { data: offers } = await supabase
       .from("offer_letters")
       .select("*")
-      .eq("candidate_id", userData.id)
+      .in("candidate_id", candidateIds)
       .order("created_at", { ascending: false })
       .limit(1);
     if (offers?.length) {
       setOfferLetter(offers[0]);
       const { data: comp } = await supabase.from("companies").select("company_name").eq("id", (offers[0] as any).company_id).maybeSingle();
       if (comp) setCompanyName(comp.company_name);
+    } else {
+      setOfferLetter(null);
     }
 
     const { data: interviewData } = await supabase
       .from("interviews")
       .select("*")
-      .eq("candidate_id", userData.id)
+      .in("candidate_id", candidateIds)
       .order("scheduled_date", { ascending: false });
     if (interviewData) setInterviews(interviewData as any);
+    else setInterviews([]);
 
     if (apps?.length) {
       const { data: myGroups } = await supabase
         .from("gd_groups")
         .select("gd_id, group_name, candidate_ids")
-        .contains("candidate_ids", [userData.id]);
+        .or(`candidate_ids.cs.{${userData.id}},candidate_ids.cs.{${session.user.id}}`);
       const myGroup = (myGroups || [])[0] as any;
       if (myGroup?.gd_id) {
         const { data: gd } = await supabase
@@ -203,13 +210,13 @@ const CandidateDashboard = () => {
       }
     }
 
-    const { data: bgvData } = await supabase.from("bgv_documents").select("*").eq("candidate_id", userData.id);
+    const { data: bgvData } = await supabase.from("bgv_documents").select("*").in("candidate_id", candidateIds);
     if (bgvData) setBgvDocs(bgvData as any);
 
     const { data: notifs } = await supabase
       .from("notifications")
       .select("*")
-      .eq("user_id", userData.id)
+      .in("user_id", candidateIds)
       .order("created_at", { ascending: false })
       .limit(20);
     if (notifs) setNotifications(notifs);

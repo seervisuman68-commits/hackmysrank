@@ -122,15 +122,17 @@ export const BeforeInterviewCandidateContent = () => {
     // Query Supabase applications for candidate
     try {
       const candidateIds = [currentCandidateId, sessionUserId].filter(Boolean);
-      let query = supabase.from("applications").select("*, jobs(*)");
-      if (candidateIds.length > 0 && currentCandidateEmail) {
-        query = query.or(`candidate_id.in.(${candidateIds.join(",")}),candidate_email.eq.${currentCandidateEmail}`);
-      } else if (candidateIds.length > 0) {
-        query = query.in("candidate_id", candidateIds);
-      } else if (currentCandidateEmail) {
-        query = query.eq("candidate_email", currentCandidateEmail);
+      let dbApps: any[] = [];
+      if (candidateIds.length > 0) {
+        const { data, error } = await supabase
+          .from("applications")
+          .select("*, jobs(*)")
+          .in("candidate_id", candidateIds)
+          .order("applied_at", { ascending: false });
+        if (!error && data) {
+          dbApps = data;
+        }
       }
-      const { data: dbApps } = await query.order("applied_at", { ascending: false });
 
       if (dbApps && dbApps.length > 0) {
         // Fetch candidate profile for GitHub and skills

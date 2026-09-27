@@ -151,11 +151,16 @@ const Jobs = () => {
   useEffect(() => {
     if (!session?.user) return;
     (async () => {
-      const [{ data: prof }, { data: apps }, { data: userRow }] = await Promise.all([
+      const [{ data: prof }, { data: userRow }] = await Promise.all([
         supabase.from("candidate_profiles").select("skills").eq("user_id", session.user.id).maybeSingle(),
-        supabase.from("applications").select("job_id").eq("candidate_id", session.user.id),
-        supabase.from("users").select("department").eq("user_id", session.user.id).maybeSingle(),
+        supabase.from("users").select("id, department").eq("user_id", session.user.id).maybeSingle(),
       ]);
+      const candidateIds = [userRow?.id, session.user.id].filter(Boolean);
+      const { data: apps } = await supabase
+        .from("applications")
+        .select("job_id")
+        .in("candidate_id", candidateIds);
+
       const skills = (prof?.skills as any[] | null)?.map((s: any) => typeof s === "string" ? s : s?.name).filter(Boolean) || [];
       setCandidateSkills(skills);
       setAppliedJobIds(new Set((apps || []).map((a: any) => a.job_id)));

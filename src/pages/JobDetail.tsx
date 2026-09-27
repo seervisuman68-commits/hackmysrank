@@ -92,10 +92,18 @@ const JobDetail = () => {
       } catch {}
 
       if (session?.user) {
-        const [{ data: prof }, { data: app }] = await Promise.all([
+        const [{ data: prof }, { data: userRow }] = await Promise.all([
           supabase.from("candidate_profiles").select("skills").eq("user_id", session.user.id).maybeSingle(),
-          supabase.from("applications").select("id").eq("candidate_id", session.user.id).eq("job_id", id).maybeSingle(),
+          supabase.from("users").select("id").eq("user_id", session.user.id).maybeSingle(),
         ]);
+        const candidateIds = [userRow?.id, session.user.id].filter(Boolean);
+        const { data: app } = await supabase
+          .from("applications")
+          .select("id")
+          .in("candidate_id", candidateIds)
+          .eq("job_id", id)
+          .maybeSingle();
+
         const skills = (prof?.skills as any[] | null)?.map((s: any) => typeof s === "string" ? s : s?.name).filter(Boolean) || [];
         setCandidateSkills(skills);
         setApplied(!!app);
