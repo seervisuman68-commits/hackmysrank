@@ -1,292 +1,294 @@
 import React, { useState } from "react";
 import {
-  ShieldCheck,
+  Code2,
   CheckCircle2,
-  XCircle,
   AlertCircle,
   HelpCircle,
-  Sparkles,
-  ArrowRight,
-  Code2,
   Terminal,
+  Sparkles,
+  ShieldCheck,
   FileCode,
-  Award,
-  RefreshCw,
-  Check,
+  ArrowRight,
+  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
 import {
-  GitHubVerificationReport,
   GitHubCodeUnderstandingQuestion,
+  GitHubVerificationReport,
   performGitHubCodeVerification,
 } from "@/lib/githubVerifier";
-import { InspectedCodeFile } from "@/lib/hiringWorkflowEngine";
+import { CandidateApplicationSubmission, JobCutoffs } from "@/lib/hiringWorkflowEngine";
 
 interface GitHubUnderstandingAssessmentProps {
-  report: GitHubVerificationReport;
-  candidateName: string;
-  candidateEmail?: string;
-  repoUrl: string;
-  inspectedFiles: InspectedCodeFile[];
-  onComplete: (updatedReport: GitHubVerificationReport) => void;
+  application: CandidateApplicationSubmission;
+  job: JobCutoffs;
+  onAssessmentCompleted?: (report: GitHubVerificationReport) => void;
 }
 
 export const GitHubUnderstandingAssessment: React.FC<GitHubUnderstandingAssessmentProps> = ({
-  report,
-  candidateName,
-  candidateEmail,
-  repoUrl,
-  inspectedFiles,
-  onComplete,
+  application,
+  job,
+  onAssessmentCompleted,
 }) => {
-  const [answers, setAnswers] = useState<{ [qId: number]: number }>(() => {
-    const initial: { [qId: number]: number } = {};
-    for (const q of report.understandingAssessment.questions) {
-      if (q.userAnswer !== undefined) {
-        initial[q.id] = q.userAnswer;
+  const { toast } = useToast();
+  const [selectedAnswers, setSelectedAnswers] = useState<{ [qId: number]: number }>({});
+  const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [report, setReport] = useState<GitHubVerificationReport | null>(null);
+
+  // Initialize questions
+  const [questions, setQuestions] = useState<GitHubCodeUnderstandingQuestion[]>([]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const rep = await performGitHubCodeVerification(
+        application.githubRepo1Url || application.githubAccountUrl || "candidate-repo",
+        {
+          name: application.candidateName || "Candidate",
+          email: application.candidateEmail,
+          requiredSkills: job.requiredSkills,
+        },
+        application.inspectedCodeFiles,
+        selectedAnswers
+      );
+      if (mounted) {
+        setReport(rep);
+        setQuestions(rep.understandingAssessment.questions);
       }
-    }
-    return initial;
-  });
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [application.id, application.githubRepo1Url]);
 
-  const [activeQIndex, setActiveQIndex] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(report.understandingAssessment.answeredCount > 0);
-
-  const questions = report.understandingAssessment.questions;
-  const currentQ = questions[activeQIndex] || questions[0];
-
-  const handleSelectOption = (qId: number, optIdx: number) => {
-    if (submitted) return;
-    setAnswers((prev) => ({ ...prev, [qId]: optIdx }));
+  const handleSelectOption = (qId: number, optionIdx: number) => {
+    if (isSubmitted) return;
+    setSelectedAnswers((prev) => ({ ...prev, [qId]: optionIdx }));
   };
 
-  const handleFinishQuiz = async () => {
+  const handleSubmit = async () => {
+    if (Object.keys(selectedAnswers).length < questions.length) {
+      toast({
+        title: "Incomplete Assessment",
+        description: `Please answer all ${questions.length} questions about your repository code before submitting.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      const updated = await performGitHubCodeVerification(
-        repoUrl,
-        { name: candidateName, email: candidateEmail },
-        inspectedFiles,
-        answers
+      const updatedReport = await performGitHubCodeVerification(
+        application.githubRepo1Url || application.githubAccountUrl || "candidate-repo",
+        {
+          name: application.candidateName || "Candidate",
+          email: application.candidateEmail,
+          requiredSkills: job.requiredSkills,
+        },
+        application.inspectedCodeFiles,
+        selectedAnswers
       );
-      setSubmitted(true);
-      onComplete(updated);
+
+      setReport(updatedReport);
+      setQuestions(updatedReport.understandingAssessment.questions);
+      setIsSubmitted(true);
+
+      if (onAssessmentCompleted) {
+        onAssessmentCompleted(updatedReport);
+      }
+
+      toast({
+        title: `Code Understanding Score: ${updatedReport.understandingScore}%`,
+        description: `Your repository code comprehension answers have been evaluated and verified for HR.`,
+      });
     } catch (e) {
-      console.error("Error submitting code assessment:", e);
+      console.error("Error submitting code understanding assessment:", e);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleRetake = () => {
-    setAnswers({});
-    setSubmitted(false);
-    setActiveQIndex(0);
-  };
-
-  const answeredCount = Object.keys(answers).length;
-  const isAllAnswered = answeredCount === questions.length;
+  const answeredCount = Object.keys(selectedAnswers).length;
+  const allAnswered = answeredCount === questions.length;
 
   return (
-    <div className="p-6 md:p-8 rounded-3xl bg-paper border border-ink/15 shadow-sm space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-ink/10 pb-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Code2 className="w-5 h-5 text-forest" />
-            <h3 className="font-serif-display text-xl font-bold text-ink">
-              Candidate Repository Code Comprehension Quiz
-            </h3>
-            <Badge variant="outline" className="font-mono text-xs bg-forest/10 text-forest border-forest/30 font-bold">
-              5–10 Code Questions
-            </Badge>
+    <div className="space-y-6">
+      {/* Assessment Header */}
+      <div className="p-6 rounded-3xl bg-paper border border-ink/15 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Code2 className="w-5 h-5 text-forest" />
+              <h3 className="font-serif-display text-lg font-bold text-ink">
+                Candidate Code Understanding Assessment
+              </h3>
+              <Badge variant="outline" className="font-mono text-xs bg-forest/10 text-forest border-forest/30">
+                {questions.length} Custom Questions
+              </Badge>
+            </div>
+            <p className="text-xs text-ink-soft">
+              Answer the following questions about your actual repository code (<strong>{application.githubRepo1Url || "primary repo"}</strong>).
+              This validates genuine authorship and understanding of your code architecture.
+            </p>
           </div>
-          <p className="text-xs text-ink-soft">
-            Questions synthesized directly from your repository's clean source files to verify genuine understanding of concurrency, memory management, and business logic.
-          </p>
+
+          {isSubmitted && report && (
+            <div className="flex items-center gap-3 p-3 rounded-2xl bg-forest/10 border border-forest/20 shrink-0">
+              <div className="text-center">
+                <div className="text-[10px] font-mono text-ink-muted uppercase">Understanding Score</div>
+                <div className="font-serif-display text-2xl font-bold text-forest">{report.understandingScore}%</div>
+              </div>
+              <Badge className="bg-forest text-paper text-xs">
+                {report.finalStatus}
+              </Badge>
+            </div>
+          )}
         </div>
 
-        {submitted ? (
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-[10px] font-mono text-ink-muted uppercase">Comprehension Score</div>
-              <div className="font-serif-display text-2xl font-bold text-forest">
-                {report.understandingScore}%
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRetake}
-              className="text-xs gap-1.5 border-ink/15"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Retake
-            </Button>
+        {/* Progress Bar */}
+        <div className="space-y-1.5 pt-2 border-t border-ink/10 text-xs">
+          <div className="flex justify-between text-ink-soft font-mono text-[11px]">
+            <span>Answered: {answeredCount} of {questions.length} questions</span>
+            <span>{Math.round((answeredCount / (questions.length || 1)) * 100)}% Complete</span>
           </div>
-        ) : (
-          <div className="flex items-center gap-2 font-mono text-xs text-ink-muted bg-paper-2 px-3 py-1.5 rounded-xl border border-ink/10">
-            <span>Progress:</span>
-            <strong className="text-ink">
-              {answeredCount}/{questions.length} Answered
-            </strong>
+          <div className="w-full h-2 rounded-full bg-ink/10 overflow-hidden">
+            <div
+              className="h-full bg-forest rounded-full transition-all duration-300"
+              style={{ width: `${(answeredCount / (questions.length || 1)) * 100}%` }}
+            />
           </div>
-        )}
+        </div>
       </div>
 
-      {/* Question Carousel / Navigator */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+      {/* Questions List */}
+      <div className="space-y-6">
         {questions.map((q, idx) => {
-          const isAnswered = answers[q.id] !== undefined;
-          const isActive = idx === activeQIndex;
-          const isCorrect = submitted && q.isCorrect;
+          const selected = selectedAnswers[q.id];
+          const isCorrect = q.isCorrect;
 
           return (
-            <button
+            <div
               key={q.id}
-              onClick={() => setActiveQIndex(idx)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-mono font-medium transition-all flex items-center gap-1.5 shrink-0 ${
-                isActive
-                  ? "bg-ink text-paper font-bold shadow"
-                  : submitted
+              className={`p-6 rounded-3xl bg-paper border transition-all shadow-sm ${
+                isSubmitted
                   ? isCorrect
-                    ? "bg-forest/15 text-forest border border-forest/30"
-                    : "bg-destructive/15 text-destructive border border-destructive/30"
-                  : isAnswered
-                  ? "bg-forest/10 text-forest border border-forest/20"
-                  : "bg-paper-2 text-ink-soft hover:bg-ink/5 border border-ink/10"
+                    ? "border-forest/40 bg-forest/[0.02]"
+                    : "border-destructive/30 bg-destructive/[0.02]"
+                  : "border-ink/15 hover:border-forest/30"
               }`}
             >
-              <span>Q{idx + 1}</span>
-              {submitted && (isCorrect ? <Check className="w-3 h-3 text-forest" /> : <XCircle className="w-3 h-3 text-destructive" />)}
-            </button>
+              {/* Question Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-forest text-paper text-xs font-mono font-bold grid place-items-center shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="text-xs font-mono font-bold text-forest uppercase tracking-wider">
+                    {q.conceptTested}
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono text-ink-muted bg-paper-2 border border-ink/10 px-2.5 py-0.5 rounded-full self-start sm:self-auto flex items-center gap-1">
+                  <FileCode className="w-3 h-3 text-forest" />
+                  {q.fileSnippet.fileName} (Lines {q.fileSnippet.lineStart}–{q.fileSnippet.lineEnd})
+                </span>
+              </div>
+
+              {/* Source Code Snippet Box */}
+              <div className="mb-4 rounded-2xl border border-ink/15 overflow-hidden bg-[#0d1117] text-[#e6edf3] font-mono text-xs shadow-inner">
+                <div className="p-2 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between text-[11px] text-[#8b949e]">
+                  <span>📄 {q.fileSnippet.fileName}</span>
+                  <span className="text-emerald-400">Actual Repository Snippet</span>
+                </div>
+                <pre className="p-3.5 overflow-x-auto text-xs leading-relaxed text-[#c9d1d9]">
+                  {q.fileSnippet.code}
+                </pre>
+              </div>
+
+              {/* Question Text */}
+              <h4 className="font-semibold text-sm text-ink mb-3 pl-1">{q.question}</h4>
+
+              {/* Options */}
+              <div className="space-y-2">
+                {q.options.map((opt, optIdx) => {
+                  const isSelected = selected === optIdx;
+                  const isAnswerCorrect = optIdx === q.correctIndex;
+
+                  let optionStyle = "bg-paper-2 text-ink-soft border-ink/10 hover:bg-ink/5";
+                  if (isSubmitted) {
+                    if (isAnswerCorrect) {
+                      optionStyle = "bg-forest/10 border-forest/40 text-ink font-medium";
+                    } else if (isSelected && !isAnswerCorrect) {
+                      optionStyle = "bg-destructive/10 border-destructive/40 text-destructive";
+                    }
+                  } else if (isSelected) {
+                    optionStyle = "bg-forest text-paper border-forest font-semibold";
+                  }
+
+                  return (
+                    <button
+                      key={optIdx}
+                      disabled={isSubmitted}
+                      onClick={() => handleSelectOption(q.id, optIdx)}
+                      className={`w-full p-3 rounded-2xl text-xs flex items-start gap-3 text-left transition-all border ${optionStyle}`}
+                    >
+                      <span className="font-mono font-bold shrink-0 w-4">
+                        {String.fromCharCode(65 + optIdx)}.
+                      </span>
+                      <span className="flex-1">{opt}</span>
+                      {isSubmitted && isAnswerCorrect && (
+                        <span className="ml-auto text-[10px] font-mono uppercase bg-forest text-paper px-2 py-0.5 rounded-full shrink-0 font-semibold">
+                          Verified Correct ✓
+                        </span>
+                      )}
+                      {isSubmitted && isSelected && !isAnswerCorrect && (
+                        <span className="ml-auto text-[10px] font-mono uppercase bg-destructive text-paper px-2 py-0.5 rounded-full shrink-0 font-semibold">
+                          Your Selection ✕
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* AI Explanation / Rationale after Submit */}
+              {isSubmitted && (
+                <div className="mt-4 p-3.5 rounded-2xl bg-paper-2 border border-ink/10 text-xs space-y-1">
+                  <div className="font-semibold text-ink flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-forest" />
+                    Code Architecture Rationale:
+                  </div>
+                  <p className="text-ink-soft leading-relaxed pl-5">{q.rationale}</p>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
 
-      {/* Active Question Box */}
-      {currentQ && (
-        <div className="space-y-4">
-          <div className="p-4 rounded-2xl bg-paper-2 border border-ink/10 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold text-forest uppercase tracking-wider">
-                Concept: {currentQ.conceptTested}
+      {/* Submit Button */}
+      {!isSubmitted && (
+        <div className="p-6 rounded-3xl bg-paper border border-ink/15 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+          <div className="text-xs text-ink-soft">
+            {allAnswered ? (
+              <span className="text-forest font-semibold flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" /> All {questions.length} questions answered. Ready to submit for evaluation!
               </span>
-              <span className="text-[11px] font-mono text-ink-muted flex items-center gap-1">
-                <FileCode className="w-3 h-3 text-forest" />
-                {currentQ.fileSnippet.fileName} (Lines {currentQ.fileSnippet.lineStart}–{currentQ.fileSnippet.lineEnd})
-              </span>
-            </div>
-
-            <h4 className="text-sm font-semibold text-ink leading-relaxed">
-              {activeQIndex + 1}. {currentQ.question}
-            </h4>
-
-            {/* Code Snippet from Candidate Repo */}
-            <div className="rounded-xl bg-[#1e1e1e] text-[#d4d4d4] p-3 text-xs font-mono overflow-x-auto border border-white/10 shadow-inner">
-              <div className="text-[10px] text-white/40 pb-1 border-b border-white/10 mb-2 flex items-center justify-between">
-                <span>{currentQ.fileSnippet.fileName}</span>
-                <span className="uppercase">{currentQ.fileSnippet.language}</span>
-              </div>
-              <pre className="text-xs font-mono leading-relaxed">{currentQ.fileSnippet.code}</pre>
-            </div>
-          </div>
-
-          {/* Options */}
-          <div className="space-y-2">
-            {currentQ.options.map((option, optIdx) => {
-              const isSelected = answers[currentQ.id] === optIdx;
-              const isCorrect = currentQ.correctIndex === optIdx;
-              const showResult = submitted;
-
-              return (
-                <button
-                  key={optIdx}
-                  disabled={submitted}
-                  onClick={() => handleSelectOption(currentQ.id, optIdx)}
-                  className={`w-full text-left p-3.5 rounded-2xl border transition-all text-xs flex items-start gap-3 ${
-                    showResult
-                      ? isCorrect
-                        ? "bg-forest/10 border-forest/50 text-ink font-medium"
-                        : isSelected
-                        ? "bg-destructive/10 border-destructive/50 text-destructive"
-                        : "bg-paper border-ink/10 text-ink-soft opacity-60"
-                      : isSelected
-                      ? "bg-forest/10 border-forest text-ink font-medium shadow-sm ring-1 ring-forest"
-                      : "bg-paper hover:bg-paper-2 border-ink/15 text-ink"
-                  }`}
-                >
-                  <div
-                    className={`w-5 h-5 rounded-full grid place-items-center font-mono text-[11px] font-bold shrink-0 mt-0.5 ${
-                      isSelected
-                        ? "bg-forest text-paper"
-                        : "bg-paper-2 text-ink-muted border border-ink/20"
-                    }`}
-                  >
-                    {String.fromCharCode(65 + optIdx)}
-                  </div>
-                  <div className="flex-1 leading-relaxed">{option}</div>
-                  {showResult && isCorrect && (
-                    <Badge className="bg-forest text-paper text-[10px] shrink-0 font-mono">
-                      Correct Answer
-                    </Badge>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Answer Rationale Explanation */}
-          {submitted && (
-            <div className="p-3.5 rounded-2xl bg-forest/5 border border-forest/20 text-xs space-y-1">
-              <span className="font-semibold text-forest flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" /> Architectural Rationale:
-              </span>
-              <p className="text-ink-soft leading-relaxed pl-5">{currentQ.rationale}</p>
-            </div>
-          )}
-
-          {/* Bottom Action Controls */}
-          <div className="flex items-center justify-between pt-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={activeQIndex === 0}
-              onClick={() => setActiveQIndex((p) => Math.max(0, p - 1))}
-              className="text-xs border border-ink/10"
-            >
-              Previous Question
-            </Button>
-
-            {activeQIndex < questions.length - 1 ? (
-              <Button
-                size="sm"
-                onClick={() => setActiveQIndex((p) => Math.min(questions.length - 1, p + 1))}
-                className="bg-ink text-paper hover:bg-ink/90 text-xs gap-1"
-              >
-                Next Question <ArrowRight className="w-3.5 h-3.5" />
-              </Button>
-            ) : !submitted ? (
-              <Button
-                size="sm"
-                disabled={!isAllAnswered || isSubmitting}
-                onClick={handleFinishQuiz}
-                className="bg-forest text-paper hover:bg-forest/90 text-xs gap-1.5 shadow-sm font-semibold"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                {isSubmitting ? "Scoring Assessment..." : "Submit Code Assessment"}
-              </Button>
             ) : (
-              <Button
-                size="sm"
-                onClick={() => setActiveQIndex(0)}
-                className="bg-forest text-paper hover:bg-forest/90 text-xs font-semibold"
-              >
-                Review First Question
-              </Button>
+              <span>Please answer all questions ({answeredCount}/{questions.length} answered).</span>
             )}
           </div>
+
+          <Button
+            onClick={handleSubmit}
+            disabled={!allAnswered || isSubmitting}
+            className="bg-forest text-paper hover:bg-forest/90 text-xs px-6 py-2.5 rounded-2xl shadow gap-2 shrink-0 font-semibold"
+          >
+            <Send className="w-3.5 h-3.5" />
+            {isSubmitting ? "Evaluating Understanding..." : `Submit Code Understanding Assessment (${answeredCount}/${questions.length})`}
+          </Button>
         </div>
       )}
     </div>

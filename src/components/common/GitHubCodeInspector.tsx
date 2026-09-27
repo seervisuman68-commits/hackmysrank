@@ -1,52 +1,50 @@
 import React, { useState, useEffect } from "react";
 import {
+  GitBranch,
   ShieldCheck,
+  AlertCircle,
   CheckCircle2,
-  AlertTriangle,
+  Code2,
   FileCode,
   Sparkles,
   ExternalLink,
   Layers,
-  Code2,
   Terminal,
   Cpu,
-  ListChecks,
-  FileText,
+  RefreshCw,
+  Eye,
   Filter,
+  FileText,
+  ListChecks,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
+import { Badge } from "@/components/ui/badge";
 import {
   InspectedCodeFile,
-  InspectedCodeLine,
   CandidateApplicationSubmission,
   JobCutoffs,
   generateDynamicInspectedCodeFiles,
-  formatExternalUrl,
 } from "@/lib/hiringWorkflowEngine";
+import { analyzeBeforeInterviewWithGemini, getGeminiApiKey } from "@/lib/geminiResumeAnalyzer";
 import {
   GitHubVerificationReport,
   performGitHubCodeVerification,
 } from "@/lib/githubVerifier";
-import {
-  getGeminiApiKey,
-  analyzeBeforeInterviewWithGemini,
-} from "@/lib/geminiResumeAnalyzer";
 import { GitHubUnderstandingAssessment } from "@/components/candidate/GitHubUnderstandingAssessment";
 import { GitHubVerificationReportView } from "@/components/hr/GitHubVerificationReportView";
+import { useToast } from "@/hooks/use-toast";
 
 interface GitHubCodeInspectorProps {
   application: CandidateApplicationSubmission;
   job: JobCutoffs;
-  isRecruiterView?: boolean;
+  isHRView?: boolean;
   onApplicationUpdate?: (updated: CandidateApplicationSubmission) => void;
 }
 
 export const GitHubCodeInspector: React.FC<GitHubCodeInspectorProps> = ({
   application,
   job,
-  isRecruiterView = false,
+  isHRView = false,
   onApplicationUpdate,
 }) => {
   const { toast } = useToast();
@@ -421,31 +419,25 @@ export const GitHubCodeInspector: React.FC<GitHubCodeInspectorProps> = ({
               </div>
             </div>
 
-            {/* File Switcher Tabs */}
-            <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            {/* File Tabs */}
+            <div className="flex flex-wrap gap-2">
               {files.map((file) => {
-                const isSelected = activeFile?.id === file.id;
+                const isActive = activeFile?.id === file.id;
                 return (
                   <button
                     key={file.id}
                     onClick={() => setSelectedFileId(file.id)}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-mono transition-all shrink-0 border ${
-                      isSelected
-                        ? "bg-ink text-paper border-ink font-semibold shadow-sm"
-                        : "bg-paper-2 text-ink-soft hover:bg-ink/5 border-ink/10"
+                    className={`px-3.5 py-2 rounded-xl text-xs font-mono flex items-center gap-2 border transition-all ${
+                      isActive
+                        ? "bg-ink text-paper border-ink shadow-sm"
+                        : "bg-paper-2 text-ink hover:bg-ink/5 border-ink/10"
                     }`}
                   >
-                    <FileCode className="w-3.5 h-3.5 text-forest" />
+                    <FileCode className={`w-3.5 h-3.5 ${isActive ? "text-forest" : "text-ink-muted"}`} />
                     <span>{file.fileName}</span>
                     <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                        file.humanPercentage >= 75
-                          ? isSelected
-                            ? "bg-forest text-paper"
-                            : "bg-forest/15 text-forest"
-                          : isSelected
-                          ? "bg-amber-400 text-ink"
-                          : "bg-amber-100 text-amber-900"
+                      className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
+                        isActive ? "bg-forest text-paper" : "bg-forest/10 text-forest"
                       }`}
                     >
                       {file.humanPercentage}% Human
@@ -455,90 +447,156 @@ export const GitHubCodeInspector: React.FC<GitHubCodeInspectorProps> = ({
               })}
             </div>
 
-            {/* Active File Inspector Box */}
+            {/* Active File Meta Details */}
             {activeFile && (
-              <div className="space-y-3">
-                <div className="p-3.5 rounded-2xl bg-paper-2 border border-ink/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div>
-                    <div className="font-semibold text-ink flex items-center gap-2">
-                      <span className="font-mono">{activeFile.fileName}</span>
-                      <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-ink/5 text-ink-muted">
-                        {activeFile.language}
-                      </span>
-                    </div>
-                    <p className="text-xs text-ink-soft mt-0.5">{activeFile.summary}</p>
-                  </div>
-                  <div className="flex items-center gap-3 font-mono text-xs shrink-0">
-                    <span className="text-forest font-semibold">🟢 {activeFile.humanPercentage}% Authentic</span>
-                    <span className="text-amber-700 font-semibold">🟡 {activeFile.aiPercentage}% AI</span>
-                  </div>
+              <div className="p-3.5 rounded-2xl bg-paper-2 border border-ink/10 text-xs flex flex-wrap items-center justify-between gap-2">
+                <div className="text-ink-soft">
+                  <strong className="text-ink">{activeFile.fileName}</strong> — {activeFile.summary}
                 </div>
-
-                {/* Key Signals Tag Cloud */}
-                {activeFile.signals && activeFile.signals.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                    <span className="text-ink-muted font-mono text-[11px]">Key Signals:</span>
-                    {activeFile.signals.map((sig, idx) => (
-                      <span
-                        key={idx}
-                        className="px-2.5 py-0.5 rounded-full bg-forest/10 text-forest border border-forest/20 text-[11px] font-medium"
-                      >
-                        ✓ {sig}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Code Window with AI / Human Line Highlighting */}
-                <div className="rounded-2xl bg-[#1e1e1e] text-[#d4d4d4] p-4 font-mono text-xs overflow-x-auto shadow-inner border border-white/10 max-h-[420px]">
-                  <div className="space-y-0.5 min-w-[550px]">
-                    {filteredLines.map((line) => (
-                      <div
-                        key={line.lineNum}
-                        className={`group flex items-center justify-between py-1 px-2 rounded transition-colors ${
-                          line.isAi
-                            ? "bg-amber-950/40 border-l-2 border-amber-500 text-amber-200/90"
-                            : "bg-emerald-950/30 border-l-2 border-emerald-500 text-emerald-100"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-8 select-none text-right text-white/30 text-[11px]">
-                            {line.lineNum}
-                          </span>
-                          <span className="text-[11px] font-mono select-none">
-                            {line.isAi ? "🟡 AI" : "🟢 Human"}
-                          </span>
-                          <span className="whitespace-pre">{line.code}</span>
-                        </div>
-
-                        {line.annotation && (
-                          <span className="text-[10px] italic text-white/40 group-hover:text-white/80 transition-colors pl-4 select-none shrink-0">
-                            // {line.annotation}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                <div className="flex items-center gap-2 font-mono text-[11px]">
+                  <span className="text-forest font-semibold">🟢 {activeFile.humanPercentage}% Hand-Written</span>
+                  <span>·</span>
+                  <span className="text-amber-700 font-semibold">🟡 {activeFile.aiPercentage}% AI Boilerplate</span>
                 </div>
               </div>
             )}
+
+            {/* Code Lines Editor Container */}
+            {activeFile && (
+              <div className="rounded-2xl border border-ink/15 overflow-hidden bg-[#0d1117] text-[#e6edf3] font-mono text-xs shadow-inner">
+                <div className="p-2.5 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between text-[11px] text-[#8b949e]">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-destructive/60" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400/60" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-forest/60" />
+                    <span className="ml-2 font-semibold text-[#c9d1d9]">{activeFile.fileName}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                      <span className="text-emerald-400">Authentic Logic</span>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+                      <span className="text-amber-300">AI Boilerplate</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 max-h-96 overflow-y-auto overflow-x-auto space-y-0.5">
+                  {filteredLines.map((line) => {
+                    const isAi = line.isAi;
+                    return (
+                      <div
+                        key={line.lineNum}
+                        className={`group flex items-start gap-3 py-0.5 px-2 rounded transition-colors ${
+                          isAi
+                            ? "bg-amber-500/10 hover:bg-amber-500/15 border-l-2 border-amber-400"
+                            : "bg-emerald-500/10 hover:bg-emerald-500/15 border-l-2 border-emerald-500"
+                        }`}
+                      >
+                        <span className="w-7 text-right select-none text-[#6e7681] text-[11px] font-mono shrink-0">
+                          {line.lineNum}
+                        </span>
+
+                        <span className="flex-1 text-[#e6edf3] whitespace-pre font-mono leading-relaxed">
+                          {line.code || " "}
+                        </span>
+
+                        {line.annotation && (
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded shrink-0 opacity-80 group-hover:opacity-100 transition-opacity ${
+                              isAi
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-400/30"
+                                : "bg-emerald-500/20 text-emerald-300 border border-emerald-400/30"
+                            }`}
+                          >
+                            {isAi ? "🟡 " : "🟢 "}
+                            {line.annotation}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Repository Stacks & Signals */}
+            <div className="grid md:grid-cols-2 gap-4 pt-2">
+              <div className="p-4 rounded-2xl bg-paper-2 border border-ink/10 space-y-2">
+                <div className="text-xs font-semibold text-ink flex items-center gap-1.5">
+                  <GitBranch className="w-3.5 h-3.5 text-forest" />
+                  Repository &amp; Account Links
+                </div>
+                <div className="space-y-1 text-xs font-mono text-ink-soft">
+                  <div>
+                    👤 Profile:{" "}
+                    <a
+                      href={application.githubAccountUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-forest underline hover:text-forest/80"
+                    >
+                      {application.githubAccountUrl}
+                    </a>
+                  </div>
+                  <div>
+                    📦 Repo 1:{" "}
+                    <a
+                      href={application.githubRepo1Url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-forest underline hover:text-forest/80"
+                    >
+                      {application.githubRepo1Url}
+                    </a>
+                  </div>
+                  {application.githubRepo2Url && (
+                    <div>
+                      📦 Repo 2:{" "}
+                      <a
+                        href={application.githubRepo2Url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-forest underline hover:text-forest/80"
+                      >
+                        {application.githubRepo2Url}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-paper-2 border border-ink/10 space-y-2">
+                <div className="text-xs font-semibold text-ink flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-forest" />
+                  Detected Architectural Signals
+                </div>
+                <ul className="space-y-1 text-xs text-ink-soft">
+                  {(application.codeSignals || []).map((sig, idx) => (
+                    <li key={idx} className="flex items-start gap-1.5">
+                      <span className="text-forest font-bold">✓</span>
+                      <span>{sig}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* SUB-TAB 2: CODE UNDERSTANDING QUIZ */}
-      {activeSubTab === "assessment" && verificationReport && (
+      {/* SUB-TAB 2: CANDIDATE CODE UNDERSTANDING ASSESSMENT */}
+      {activeSubTab === "assessment" && (
         <GitHubUnderstandingAssessment
-          report={verificationReport}
-          candidateName={application.candidateName}
-          candidateEmail={application.candidateEmail}
-          repoUrl={application.githubRepo1Url || application.githubAccountUrl || "candidate-repo"}
-          inspectedFiles={files}
-          onComplete={handleAssessmentCompleted}
+          application={application}
+          job={job}
+          onAssessmentCompleted={handleAssessmentCompleted}
         />
       )}
 
-      {/* SUB-TAB 3: HR VERIFICATION REPORT */}
+      {/* SUB-TAB 3: RECRUITER VERIFICATION REPORT */}
       {activeSubTab === "report" && verificationReport && (
         <GitHubVerificationReportView
           report={verificationReport}

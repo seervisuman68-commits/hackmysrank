@@ -196,6 +196,16 @@ export const GitHubVerificationReportView: React.FC<GitHubVerificationReportView
           </div>
           <div className="text-[10px] text-ink-muted">Generic statement ratio</div>
         </div>
+
+        <div className="p-4 rounded-2xl bg-paper border border-ink/10 shadow-sm space-y-1">
+          <div className="text-[10px] font-mono uppercase text-ink-muted flex items-center gap-1">
+            <FileSearch className="w-3 h-3 text-forest" /> Clean Source Scope
+          </div>
+          <div className="font-semibold text-sm text-ink">
+            {report.codeAnalysis.inspectedFilesCount} Files Inspected
+          </div>
+          <div className="text-[10px] text-ink-muted">node_modules/dist excluded</div>
+        </div>
       </div>
 
       {/* Grid: Repo Details & Commit Analysis */}

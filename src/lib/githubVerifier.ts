@@ -1,11 +1,34 @@
 /**
- * GitHub Code Authorship Verifier & Multi-Signal Heuristics Engine
- * Analyzes Git commit history, commit cadence, author contributions, AI attribution metadata,
- * clean source code excluding build artifacts/dependencies, generates 5-10 comprehension questions,
- * and outputs deterministic Code Authorship Classifications.
+ * GitHub Code Verification & Authorship Analysis Engine
+ * 
+ * Capabilities:
+ * 1. Fetch and analyze repository metadata via GitHub REST API / raw content
+ * 2. Multi-Signal Commit Analysis:
+ *    - Commit cadence & timing (incremental development vs single batch dump)
+ *    - Large code additions without evolution
+ *    - Author history & profile matching
+ * 3. Multi-Signal Source Code Heuristics:
+ *    - AI attribution metadata in commits and source code headers
+ *    - Generic/repetitive boilerplate patterns and generic naming
+ *    - Uniform comment density and documentation patterns
+ *    - Consistency across files
+ *    - Clean code inspection (strictly excluding node_modules, build, dist, lockfiles)
+ * 4. 5-10 Code Understanding Questions based on candidate's actual code
+ * 5. Candidate Understanding Score calculation (0-100%)
+ * 6. Final Status Classifications:
+ *    - HAND-WRITTEN
+ *    - AI-GENERATED
+ *    - AI-ASSISTED
+ *    - MIXED
+ *    - UNCERTAIN (returned whenever evidence is insufficient)
+ * 
+ * Safety:
+ * - Does NOT modify existing ATS scoring system or ATS API
+ * - Does NOT generate fake/random AI percentages
+ * - Does NOT rely only on LLM opinions; uses multi-signal static heuristics
  */
 
-import { InspectedCodeFile } from "./hiringWorkflowEngine";
+import { InspectedCodeFile } from "./geminiResumeAnalyzer";
 
 export type CodeAuthorshipClassification =
   | "HAND-WRITTEN"
@@ -804,16 +827,6 @@ export async function performGitHubCodeVerification(
       "Authorship determination is inconclusive based on available commit and code signals. Manual code walkthrough with candidate is recommended.";
     aiConfidence = "Low";
   }
-
-  const aiAuthorshipEvidence: AIAuthorshipEvidence = {
-    detected: aiPoints > 0,
-    confidence: aiConfidence,
-    evidenceList:
-      aiEvidenceList.length > 0
-        ? aiEvidenceList
-        : ["No direct AI co-authorship tags or prompt markers detected in commit history."],
-    summary: finalSummary,
-  };
 
   // 7. Dynamic Human Authenticity % vs AI % & GitHub Quality Score Calculation
   let authenticityPercentage = 88;
