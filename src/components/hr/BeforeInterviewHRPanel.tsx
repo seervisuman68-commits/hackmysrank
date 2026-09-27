@@ -6,7 +6,7 @@ import {
   ChevronRight, ExternalLink, Layers, Database, Cpu, Terminal,
   RefreshCw, Search, Briefcase, Play, Bug, Check, X, Eye, ArrowRight,
   ArrowLeft, Key, Settings, Zap, Compass, CheckCircle, Table as TableIcon,
-  Download, User
+  Download, User, Lock
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -21,6 +21,7 @@ import {
   ensureCompleteCandidateApp,
   generateDynamicMCQs,
   generateDynamicCodingChallenges,
+  analyzeCandidateCodeSubmission,
   simulateCandidateApplicationForJob,
   deleteWorkflowJob,
   clearAllWorkflowData,
@@ -46,8 +47,17 @@ export const BeforeInterviewHRContent = () => {
   const [statusFilter, setStatusFilter] = useState<"all" | "top_match" | "interview_ready" | "pending" | "rejected">("all");
   const [resumePreviewApp, setResumePreviewApp] = useState<CandidateApplicationSubmission | null>(null);
 
-  // 7 Stages matching Landing Page & HR Architecture
+  // 7 Stages matching Candidate & HR Architecture
   const [activeTab, setActiveTab] = useState<"ats" | "github" | "mcq" | "dsa" | "interview" | "skillmap" | "hrevidence">("ats");
+
+  // MCQ interactive state
+  const [selectedMCQAnswers, setSelectedMCQAnswers] = useState<Record<number, number>>({});
+  const [mcqSubmitted, setMcqSubmitted] = useState(false);
+
+  // Coding challenge state
+  const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
+  const [codeInputs, setCodeInputs] = useState<Record<number, string>>({});
+  const [analyzingChallengeId, setAnalyzingChallengeId] = useState<number | null>(null);
 
   const loadData = async () => {
     let loadedApps = getWorkflowApplications();
@@ -193,26 +203,12 @@ export const BeforeInterviewHRContent = () => {
         // Real database applications are the single source of truth
         loadedApps = hydrated;
         saveWorkflowApplications(hydrated);
+      } else {
+        loadedApps = [];
+        saveWorkflowApplications([]);
       }
     } catch (e) {
       console.warn("Could not load applications from Supabase", e);
-    }
-
-    // If still empty, simulate demonstration candidates so HR panel is immediately populated
-    if (!loadedApps || loadedApps.length === 0) {
-      const primaryJob = loadedJobs[0] || DEFAULT_JOBS[0];
-      const demo1 = simulateCandidateApplicationForJob(primaryJob, {
-        candidateName: "Alex Rivera",
-        candidateEmail: "alex.rivera@example.com",
-        shouldPass: true,
-      });
-      const demo2 = simulateCandidateApplicationForJob(primaryJob, {
-        candidateName: "Jordan Smith",
-        candidateEmail: "jordan.smith@example.com",
-        shouldPass: false,
-      });
-      loadedApps = [demo1, demo2];
-      saveWorkflowApplications(loadedApps);
     }
 
     const targetAppId = new URLSearchParams(window.location.search).get("appId")
@@ -269,10 +265,35 @@ export const BeforeInterviewHRContent = () => {
 
   const currentApp = filteredApps.find((a) => a.id === selectedAppId) || filteredApps[0] || applications[0] || null;
 
+  // Sync MCQ & Code state when currentApp changes
+  useEffect(() => {
+    if (currentApp) {
+      const answers: Record<number, number> = {};
+      let isSub = false;
+      (currentApp.generatedMCQs || []).forEach((q) => {
+        if (q.userAnswer !== undefined) {
+          answers[q.id] = q.userAnswer;
+          isSub = true;
+        }
+      });
+      setSelectedMCQAnswers(answers);
+      setMcqSubmitted(isSub || currentApp.mcqScore !== undefined);
+
+      const inputs: Record<number, string> = {};
+      (currentApp.repoCodingChallenges || []).forEach((c) => {
+        inputs[c.id] = c.submittedCode || c.starterCode || "";
+      });
+      setCodeInputs(inputs);
+      setActiveChallengeIdx(0);
+    }
+  }, [currentApp?.id]);
+
   const resumeCutoffScore = activeJob?.resumeCutoff || 70;
   const isResumePassed = currentApp ? currentApp.resumeScore >= resumeCutoffScore && currentApp.resumePassed : false;
   const isGithubPassed = currentApp ? isResumePassed && currentApp.githubPassed && currentApp.authenticityPercentage >= 70 : false;
   const isMCQPassed = currentApp ? isGithubPassed && (currentApp.mcqScore !== undefined || (currentApp.generatedMCQs || []).some(q => q.userAnswer !== undefined)) : false;
+
+  const currentChallenge = currentApp?.repoCodingChallenges?.[activeChallengeIdx] || currentApp?.repoCodingChallenges?.[0];
 
   const tabs = [
     { id: "ats", label: "ATS & Resume", icon: FileText, num: "01", locked: false },
@@ -288,6 +309,107 @@ export const BeforeInterviewHRContent = () => {
     const updated = applications.map((a) => (a.id === updatedApp.id ? updatedApp : a));
     setApplications(updated);
     saveWorkflowApplications(updated);
+  };
+
+  const handleMCQSelect = (qId: number, optIdx: number) => {
+    if (mcqSubmitted) return;
+    setSelectedMCQAnswers((prev) => ({ ...prev, [qId]: optIdx }));
+  };
+
+  const handleMCQSubmit = async () => {
+    if (!currentApp) return;
+    setMcqSubmitted(true);
+    let correctCount = 0;
+    const updatedMCQs = (currentApp.generatedMCQs || []).map((q) => {
+      const userChoice = selectedMCQAnswers[q.id];
+      if (userChoice === q.correctIndex) {
+        correctCount++;
+      }
+      return { ...q, userAnswer: userChoice };
+    });
+
+    const updatedApps = applications.map((a) => {
+      if (a.id === currentApp.id) {
+        return {
+          ...a,
+          mcqScore: correctCount,
+          generatedMCQs: updatedMCQs,
+        };
+      }
+      return a;
+    });
+
+    setApplications(updatedApps);
+    saveWorkflowApplications(updatedApps);
+
+    try {
+      if (currentApp.id && !currentApp.id.startsWith("app-sim") && !currentApp.id.startsWith("app-primary")) {
+        await supabase
+          .from("applications")
+          .update({
+            ai_analysis: {
+              resume_score: currentApp.resumeScore,
+              authenticity_score: currentApp.authenticityPercentage,
+              github_score: currentApp.githubScore,
+              mcq_score: correctCount,
+              total_mcqs: updatedMCQs.length,
+              mcqs: updatedMCQs,
+            },
+          })
+          .eq("id", currentApp.id);
+      }
+    } catch (e) {
+      console.warn("Error syncing MCQ results to Supabase:", e);
+    }
+
+    toast({
+      title: `MCQ Evaluation: ${correctCount} / ${(currentApp.generatedMCQs || []).length} Correct`,
+      description: "Answers verified and saved to candidate dossier.",
+    });
+  };
+
+  const handleRunCodeAnalysis = (challengeId: number) => {
+    if (!currentApp) return;
+    setAnalyzingChallengeId(challengeId);
+
+    const userCode = codeInputs[challengeId] || "";
+    const reviewResult = analyzeCandidateCodeSubmission(challengeId, userCode);
+
+    setTimeout(() => {
+      const updatedApps = applications.map((a) => {
+        if (a.id === currentApp.id) {
+          const updatedChallenges = (a.repoCodingChallenges || []).map((c) => {
+            if (c.id === challengeId) {
+              return {
+                ...c,
+                submittedCode: userCode,
+                aiCodeReview: reviewResult,
+              };
+            }
+            return c;
+          });
+          return { ...a, repoCodingChallenges: updatedChallenges };
+        }
+        return a;
+      });
+
+      setApplications(updatedApps);
+      saveWorkflowApplications(updatedApps);
+      setAnalyzingChallengeId(null);
+
+      if (reviewResult?.passed) {
+        toast({
+          title: "✅ AI Code Execution: Passed",
+          description: "All test cases passed with verified algorithmic bounds.",
+        });
+      } else {
+        toast({
+          title: "⚠️ Code Error Detected",
+          description: reviewResult?.feedback || "Issues detected in submitted code.",
+          variant: "destructive",
+        });
+      }
+    }, 500);
   };
 
   const handleAdvanceToInterview = async (app: CandidateApplicationSubmission) => {
@@ -399,24 +521,6 @@ export const BeforeInterviewHRContent = () => {
     });
   };
 
-  const handleSimulateCandidate = (job: JobCutoffs, pass: boolean) => {
-    const targetJob = job || activeJob || jobs[0] || DEFAULT_JOBS[0];
-    const simApp = simulateCandidateApplicationForJob(targetJob, {
-      candidateName: pass ? "Alex Rivera" : "Jordan Smith",
-      candidateEmail: pass ? "alex.rivera@example.com" : "jordan.smith@example.com",
-      shouldPass: pass,
-    });
-    const updated = [simApp, ...applications];
-    setApplications(updated);
-    saveWorkflowApplications(updated);
-    setSelectedAppId(simApp.id);
-
-    toast({
-      title: pass ? "✨ Qualified Candidate Evaluated" : "⚠️ Sub-Cutoff Candidate Evaluated",
-      description: `Simulated application created for ${targetJob.title} with ATS Resume score of ${simApp.resumeScore}/100.`,
-    });
-  };
-
   const handleReanalyzeWithGemini = async () => {
     if (!currentApp || !activeJob) return;
     setIsGeminiAnalyzing(true);
@@ -479,7 +583,7 @@ export const BeforeInterviewHRContent = () => {
         setApplications(updated);
         saveWorkflowApplications(updated);
 
-        // Synchronize evaluated ATS score and AI metadata to Supabase applications
+        // Synchronize evaluated ATS score to Supabase
         try {
           if (currentApp.id && !currentApp.id.startsWith("app-sim") && !currentApp.id.startsWith("app-primary")) {
             await supabase
@@ -526,49 +630,50 @@ export const BeforeInterviewHRContent = () => {
     setShowApiKeyModal(false);
     toast({
       title: "✅ Gemini API Key Saved",
-      description: "Gemini AI is now active for live ATS scoring, 5 MCQs, and coding challenges.",
+      description: "Gemini AI is now active for resume scoring, 5 MCQs, and coding challenges.",
     });
   };
 
-  // Status-filtered applications
-  const displayedApps = filteredApps.filter((app) => {
-    if (statusFilter === "top_match") return app.resumeScore >= 90;
-    if (statusFilter === "interview_ready") return app.overallStatus === "Interview Ready";
-    if (statusFilter === "pending") return app.overallStatus !== "Interview Ready" && app.currentStage !== "rejected";
-    if (statusFilter === "rejected") return app.currentStage === "rejected" || app.overallStatus.includes("Rejected");
+  // Status counts for filters
+  const allCount = filteredApps.length;
+  const topMatchCount = filteredApps.filter((a) => a.resumeScore >= 90).length;
+  const pendingCount = filteredApps.filter((a) => a.overallStatus.includes("Before Interview") || a.currentStage === "before_interview").length;
+  const interviewReadyCount = filteredApps.filter((a) => a.overallStatus === "Interview Ready").length;
+  const rejectedCount = filteredApps.filter((a) => a.currentStage === "rejected" || a.overallStatus.includes("Rejected")).length;
+
+  const displayedApps = filteredApps.filter((a) => {
+    if (statusFilter === "all") return true;
+    if (statusFilter === "top_match") return a.resumeScore >= 90;
+    if (statusFilter === "pending") return a.overallStatus.includes("Before Interview") || a.currentStage === "before_interview";
+    if (statusFilter === "interview_ready") return a.overallStatus === "Interview Ready";
+    if (statusFilter === "rejected") return a.currentStage === "rejected" || a.overallStatus.includes("Rejected");
     return true;
   });
 
-  const allCount = filteredApps.length;
-  const topMatchCount = filteredApps.filter((a) => a.resumeScore >= 90).length;
-  const interviewReadyCount = filteredApps.filter((a) => a.overallStatus === "Interview Ready").length;
-  const pendingCount = filteredApps.filter((a) => a.overallStatus !== "Interview Ready" && a.currentStage !== "rejected").length;
-  const rejectedCount = filteredApps.filter((a) => a.currentStage === "rejected" || a.overallStatus.includes("Rejected")).length;
-
   return (
     <div className="space-y-6">
-      {/* Top Banner: Workflow Header + Job Selector + Simulation Tools */}
+      {/* Top Banner: Workflow Header + Job Selector + Actions */}
       <div className="rounded-2xl md:rounded-[28px] border border-ink/15 bg-paper p-6 md:p-8 space-y-6 shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2 mb-2">
               <span className="px-3 py-1 rounded-full text-xs font-mono uppercase tracking-wider bg-forest/10 text-forest border border-forest/20 flex items-center gap-1.5 font-semibold">
                 <ScanSearch className="w-3.5 h-3.5" />
-                Step 1: Before Interview Screening Architecture
+                Step 1: Before Interview Screening Layer
               </span>
               <button
                 onClick={() => setShowApiKeyModal(true)}
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono bg-ink/5 hover:bg-ink/10 text-ink border border-ink/15 transition-colors"
               >
                 <Key className="w-3 h-3 text-forest" />
-                <span>Gemini API Key: {getGeminiApiKey() ? "Configured ✓" : "Set Key"}</span>
+                <span>Gemini AI Key: {getGeminiApiKey() ? "Configured ✓" : "Set Key"}</span>
               </button>
             </div>
             <h2 className="font-serif-display text-2xl md:text-3xl text-ink font-semibold">
               Before Interview Screening Control Room
             </h2>
             <p className="text-sm text-ink-soft mt-1 max-w-2xl">
-              Candidates are evaluated on <strong>ATS Resume Match (&ge;{resumeCutoffScore}%)</strong>, <strong>GitHub Code Authenticity (&ge;70%)</strong>, <strong>5 Tailored MCQs</strong>, <strong>Adaptive DSA</strong>, and <strong>AI Interview Probing</strong>.
+              Recruiter screening layer evaluating applicants on <strong>ATS Resume Match (&ge;{resumeCutoffScore}%)</strong>, <strong>GitHub Code Authenticity (&ge;70%)</strong>, <strong>5 Tailored MCQs</strong>, <strong>Adaptive DSA</strong>, and <strong>AI Probing</strong>.
             </p>
           </div>
 
@@ -584,7 +689,7 @@ export const BeforeInterviewHRContent = () => {
                 }`}
               >
                 <TableIcon className="w-3.5 h-3.5" />
-                <span>Candidates List</span>
+                <span>Candidates List View</span>
               </button>
               <button
                 onClick={() => setViewMode("dossier")}
@@ -607,21 +712,18 @@ export const BeforeInterviewHRContent = () => {
             >
               <RefreshCw className="w-3.5 h-3.5 mr-1.5 text-forest" /> Sync Live Data
             </Button>
-            <Button
-              size="sm"
-              onClick={() => handleSimulateCandidate(activeJob || jobs[0] || DEFAULT_JOBS[0], true)}
-              className="bg-forest text-paper hover:bg-forest/90 text-xs h-9 px-3.5 shadow-sm"
-            >
-              <Sparkles className="w-3.5 h-3.5 mr-1.5" /> Simulate Qualified Applicant
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleSimulateCandidate(activeJob || jobs[0] || DEFAULT_JOBS[0], false)}
-              className="text-xs h-9 px-3.5 text-destructive border-destructive/30 hover:bg-destructive/10"
-            >
-              Simulate Sub-Cutoff Applicant
-            </Button>
+            {currentApp && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReanalyzeWithGemini}
+                disabled={isGeminiAnalyzing}
+                className="text-xs h-9 px-3.5 border-ink/20 hover:bg-forest/10 flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-forest" />
+                {isGeminiAnalyzing ? "Gemini Analyzing..." : "AI Re-Score with Gemini"}
+              </Button>
+            )}
           </div>
         </div>
 
@@ -659,10 +761,10 @@ export const BeforeInterviewHRContent = () => {
         </div>
       </div>
 
-      {/* VIEW 1: CLEAN CANDIDATES TABLE (WITH ARROW MARK, RESUME, AND GITHUB REPO LINKS) */}
+      {/* VIEW 1: CLEAN CANDIDATES TABLE */}
       {viewMode === "list" && (
         <div className="rounded-2xl md:rounded-[28px] border border-ink/15 bg-paper shadow-xl overflow-hidden">
-          {/* Status Filter Badges (Matching Candidates reference design) */}
+          {/* Status Filter Badges */}
           <div className="p-4 md:px-6 bg-paper-2 border-b border-ink/10 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-1.5">
               <button
@@ -732,7 +834,7 @@ export const BeforeInterviewHRContent = () => {
             <div className="p-12 text-center space-y-3">
               <Briefcase className="w-10 h-10 text-ink-muted mx-auto opacity-40" />
               <h4 className="font-serif-display text-lg text-ink font-semibold">No candidates found in this view</h4>
-              <p className="text-xs text-ink-soft">Try switching status filters or simulate an applicant above.</p>
+              <p className="text-xs text-ink-soft">Try switching status filters or syncing live applications from the database.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -904,10 +1006,10 @@ export const BeforeInterviewHRContent = () => {
         </div>
       )}
 
-      {/* VIEW 2: INTERACTIVE RECRUITER DOSSIER (MATCHING SCREENSHOT WITH CLEAN SCORE CARD MENU BAR) */}
+      {/* VIEW 2: INTERACTIVE DOSSIER */}
       {viewMode === "dossier" && currentApp && (
         <div className="w-full rounded-2xl md:rounded-[28px] border border-ink/15 bg-paper shadow-2xl overflow-hidden">
-          {/* Top Menu Bar: Clean, focused applicant navigation with Score Card */}
+          {/* Top Menu Bar: Candidate Navigation & Scorecard */}
           <div className="p-6 md:p-7 bg-paper-2 border-b border-ink/10">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
               {/* Left: Back button + Candidate Title & Info */}
@@ -1040,7 +1142,7 @@ export const BeforeInterviewHRContent = () => {
             </div>
           </div>
 
-          {/* 7 Stage Navigation Tabs Matching Screenshot */}
+          {/* 7 Stage Navigation Tabs */}
           <div className="border-b border-ink/10 bg-paper-2 overflow-x-auto scrollbar-none">
             <div className="flex items-center min-w-max px-4 py-1">
               {tabs.map((tab) => {
@@ -1083,7 +1185,7 @@ export const BeforeInterviewHRContent = () => {
             </div>
           </div>
 
-          {/* Main Interactive Tab Content - Layout Matching Screenshot */}
+          {/* Main Interactive Tab Content */}
           <div className="p-6 md:p-8 bg-[#FBF9F4] min-h-[460px]">
             <AnimatePresence mode="wait">
               {/* TAB 1: ATS & RESUME */}
@@ -1239,7 +1341,7 @@ export const BeforeInterviewHRContent = () => {
                   {!isResumePassed ? (
                     <div className="p-10 rounded-3xl bg-paper border border-ink/10 text-center space-y-3">
                       <div className="w-12 h-12 rounded-full bg-destructive/10 text-destructive grid place-items-center mx-auto">
-                        <LockIcon />
+                        <Lock />
                       </div>
                       <h4 className="font-serif-display text-xl text-ink font-semibold">Stage 02 Locked: Candidate Failed ATS Cutoff</h4>
                       <p className="text-xs text-ink-soft max-w-md mx-auto">
@@ -1270,7 +1372,7 @@ export const BeforeInterviewHRContent = () => {
                   {!isGithubPassed ? (
                     <div className="p-10 rounded-3xl bg-paper border border-ink/10 text-center space-y-3">
                       <div className="w-12 h-12 rounded-full bg-destructive/10 text-destructive grid place-items-center mx-auto">
-                        <LockIcon />
+                        <Lock />
                       </div>
                       <h4 className="font-serif-display text-xl text-ink font-semibold">Stage 03 Locked: Candidate Failed Prior Cutoffs</h4>
                       <p className="text-xs text-ink-soft max-w-md mx-auto">
@@ -1283,9 +1385,19 @@ export const BeforeInterviewHRContent = () => {
                         <span className="text-ink-soft">
                           Generated from: <strong className="text-ink">Job Requirements + Candidate Repo Stacks ({(currentApp.detectedRepoStacks || []).join(", ")})</strong>
                         </span>
-                        <span className="font-mono text-forest font-semibold bg-forest/10 px-2.5 py-1 rounded-full">
-                          Score: {currentApp.mcqScore !== undefined ? `${currentApp.mcqScore} / ${(currentApp.generatedMCQs || []).length} Correct` : "5 Personalized Questions Generated"}
-                        </span>
+                        {!mcqSubmitted ? (
+                          <Button
+                            onClick={handleMCQSubmit}
+                            disabled={Object.keys(selectedMCQAnswers).length < (currentApp.generatedMCQs || []).length}
+                            className="bg-forest text-paper hover:bg-forest/90 text-xs px-4 shadow-sm"
+                          >
+                            Submit &amp; Grade {(currentApp.generatedMCQs || []).length} MCQs
+                          </Button>
+                        ) : (
+                          <span className="font-mono text-forest font-semibold bg-forest/10 px-2.5 py-1 rounded-full">
+                            Score: {currentApp.mcqScore ?? Object.keys(selectedMCQAnswers).length} / {(currentApp.generatedMCQs || []).length} Correct ✓
+                          </span>
+                        )}
                       </div>
 
                       <div className="space-y-4">
@@ -1307,32 +1419,40 @@ export const BeforeInterviewHRContent = () => {
 
                             <div className="grid gap-2 pl-8">
                               {(q.options || []).map((opt, optIdx) => {
+                                const isSelected = selectedMCQAnswers[q.id] === optIdx || q.userAnswer === optIdx;
                                 const isCorrect = optIdx === q.correctIndex;
-                                const isCandidateSelected = q.userAnswer === optIdx;
                                 return (
-                                  <div
+                                  <button
                                     key={optIdx}
-                                    className={`p-3 rounded-xl text-xs flex items-start gap-2.5 ${
-                                      isCorrect
-                                        ? "bg-forest/10 border border-forest/30 text-ink font-medium"
-                                        : isCandidateSelected
-                                        ? "bg-destructive/10 border border-destructive/30 text-destructive"
-                                        : "bg-paper-2 text-ink-soft border border-ink/5"
+                                    disabled={mcqSubmitted}
+                                    onClick={() => handleMCQSelect(q.id, optIdx)}
+                                    className={`p-3 rounded-xl text-xs flex items-start gap-2.5 text-left transition-all ${
+                                      mcqSubmitted
+                                        ? isCorrect
+                                          ? "bg-forest/10 border border-forest/30 text-ink font-medium"
+                                          : isSelected
+                                          ? "bg-destructive/10 border border-destructive/30 text-destructive"
+                                          : "bg-paper-2 text-ink-soft border border-ink/5"
+                                        : isSelected
+                                        ? "bg-forest text-paper border border-forest font-semibold"
+                                        : "bg-paper-2 text-ink-soft hover:bg-ink/5 border border-ink/5"
                                     }`}
                                   >
                                     <span className="font-mono shrink-0 w-4 font-semibold">{String.fromCharCode(65 + optIdx)}.</span>
                                     <span className="flex-1">{opt}</span>
-                                    {isCandidateSelected && (
-                                      <span className="ml-auto text-[10px] font-mono uppercase bg-ink text-paper px-1.5 py-0.5 rounded shrink-0">
-                                        Candidate Choice
+                                    {isSelected && (
+                                      <span className={`ml-auto text-[10px] font-mono uppercase px-1.5 py-0.5 rounded shrink-0 ${
+                                        mcqSubmitted ? "bg-ink text-paper" : "bg-paper text-forest"
+                                      }`}>
+                                        Selected
                                       </span>
                                     )}
-                                    {isCorrect && (
+                                    {mcqSubmitted && isCorrect && (
                                       <span className="ml-1 text-[10px] font-mono uppercase bg-forest text-paper px-1.5 py-0.5 rounded shrink-0">
                                         Verified Correct
                                       </span>
                                     )}
-                                  </div>
+                                  </button>
                                 );
                               })}
                             </div>
@@ -1361,7 +1481,7 @@ export const BeforeInterviewHRContent = () => {
                   {!isMCQPassed ? (
                     <div className="p-10 rounded-3xl bg-paper border border-ink/10 text-center space-y-3">
                       <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-700 grid place-items-center mx-auto">
-                        <LockIcon />
+                        <Lock />
                       </div>
                       <h4 className="font-serif-display text-xl text-ink font-semibold">Stage 04 Locked: Candidate Has Not Finished MCQs</h4>
                       <p className="text-xs text-ink-soft max-w-md mx-auto">
@@ -1370,81 +1490,137 @@ export const BeforeInterviewHRContent = () => {
                     </div>
                   ) : (
                     <>
-                      <div className="flex items-center justify-between border-b border-ink/10 pb-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-ink/10 pb-4">
                         <div>
-                          <h4 className="font-serif-display text-xl text-ink">Adaptive DSA Sandbox &amp; Candidate Submissions</h4>
+                          <h4 className="font-serif-display text-xl text-ink">Adaptive DSA Sandbox — Practical Repo-Derived Challenges</h4>
                           <p className="text-xs text-ink-soft mt-0.5">
                             Extracted from candidate repositories with AI line-by-line error diagnosis and algorithmic efficiency checks.
                           </p>
                         </div>
-                        <span className="text-xs font-mono text-forest bg-forest/10 px-2.5 py-1 rounded-full font-semibold">
-                          {(currentApp.repoCodingChallenges || []).length} Challenges Evaluated
-                        </span>
+
+                        {/* Challenge Switcher Tabs */}
+                        <div className="flex bg-paper-2 p-1 rounded-xl border border-ink/10 gap-1 self-start sm:self-center">
+                          {(currentApp.repoCodingChallenges || []).map((c, i) => (
+                            <button
+                              key={c.id}
+                              onClick={() => setActiveChallengeIdx(i)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                                activeChallengeIdx === i ? "bg-ink text-paper font-semibold" : "text-ink hover:bg-ink/5"
+                              }`}
+                            >
+                              Challenge {i + 1}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
-                      <div className="space-y-4">
-                        {(currentApp.repoCodingChallenges || []).map((challenge, idx) => (
-                          <div key={challenge.id} className="p-6 rounded-3xl bg-paper border border-ink/15 space-y-4 shadow-sm">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                              <div className="font-medium text-sm text-ink">
-                                Challenge {idx + 1}: {challenge.title}
+                      {currentChallenge ? (
+                        <div className="grid lg:grid-cols-12 gap-6">
+                          {/* Left: Problem Statement & Test Cases */}
+                          <div className="lg:col-span-5 space-y-4">
+                            <div className="p-6 rounded-3xl bg-paper border border-ink/15 space-y-3 shadow-sm">
+                              <div className="flex items-center justify-between">
+                                <span className="font-mono text-xs font-bold text-forest uppercase">
+                                  Challenge {activeChallengeIdx + 1}
+                                </span>
+                                <span className="text-[10px] font-mono text-ink-muted bg-paper-2 px-2 py-0.5 rounded border border-ink/10">
+                                  {currentChallenge.repoContext}
+                                </span>
                               </div>
-                              <span className="text-[10px] font-mono text-forest bg-forest/10 px-2 py-0.5 rounded-full self-start sm:self-auto">
-                                Source: {challenge.repoContext}
-                              </span>
-                            </div>
+                              <h4 className="font-serif-display text-lg text-ink font-semibold">{currentChallenge.title}</h4>
+                              <p className="text-xs text-ink-soft leading-relaxed">{currentChallenge.problemStatement}</p>
 
-                            <p className="text-xs text-ink-soft leading-relaxed">
-                              {challenge.problemStatement}
-                            </p>
-
-                            {/* Candidate Code Submission */}
-                            <div className="space-y-1">
-                              <div className="text-[11px] font-semibold text-ink flex items-center gap-1">
-                                <Terminal className="w-3.5 h-3.5 text-forest" /> Candidate's Submitted Code:
-                              </div>
-                              <pre className="p-3 rounded-xl bg-ink text-paper font-mono text-xs overflow-x-auto max-h-48 leading-relaxed">
-                                {challenge.submittedCode || challenge.starterCode}
-                              </pre>
-                            </div>
-
-                            {/* AI Review Diagnostics */}
-                            {challenge.aiCodeReview && (
-                              <div className={`p-3.5 rounded-xl border text-xs space-y-2 ${
-                                challenge.aiCodeReview.passed
-                                  ? "bg-forest/10 border-forest/30 text-forest"
-                                  : "bg-destructive/10 border-destructive/30 text-destructive"
-                              }`}>
-                                <div className="flex items-center justify-between font-semibold">
-                                  <span className="flex items-center gap-1.5">
-                                    {challenge.aiCodeReview.passed ? (
-                                      <CheckCircle2 className="w-4 h-4 text-forest" />
-                                    ) : (
-                                      <AlertCircle className="w-4 h-4 text-destructive" />
-                                    )}
-                                    AI Diagnostic: {challenge.aiCodeReview.feedback}
-                                  </span>
-                                  <span className="font-mono text-[10px]">
-                                    Efficiency: {challenge.aiCodeReview.efficiencyRating}
-                                  </span>
+                              <div className="pt-2 border-t border-ink/10">
+                                <span className="text-[11px] font-semibold text-ink block mb-1.5">Verification Test Cases:</span>
+                                <div className="space-y-1.5">
+                                  {(currentChallenge.testCases || []).map((tc, idx) => (
+                                    <div key={idx} className="p-2 rounded-lg bg-paper-2 border border-ink/5 text-[11px] font-mono">
+                                      <div className="text-ink-soft">Input: <span className="text-ink">{tc.input}</span></div>
+                                      <div className="text-forest font-semibold">Expected: {tc.expectedOutput}</div>
+                                    </div>
+                                  ))}
                                 </div>
-
-                                {(challenge.aiCodeReview.errorsDetected || []).length > 0 && (
-                                  <div className="space-y-1 pt-1 border-t border-destructive/20">
-                                    <span className="text-[11px] font-semibold block">Detected Code Errors:</span>
-                                    {(challenge.aiCodeReview.errorsDetected || []).map((err, i) => (
-                                      <div key={i} className="text-[11px] flex items-start gap-1 font-mono">
-                                        <Bug className="w-3 h-3 mt-0.5 shrink-0" />
-                                        <span>{err}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
                               </div>
-                            )}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+
+                          {/* Right: Code Editor & Live AI Review */}
+                          <div className="lg:col-span-7 space-y-4">
+                            <div className="p-6 rounded-3xl bg-paper border border-ink/15 space-y-3 shadow-sm">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-mono font-semibold text-ink flex items-center gap-1.5">
+                                  <Terminal className="w-3.5 h-3.5 text-forest" /> Code Playground (Candidate Submission)
+                                </span>
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleRunCodeAnalysis(currentChallenge.id)}
+                                  disabled={analyzingChallengeId === currentChallenge.id}
+                                  className="bg-forest text-paper hover:bg-forest/90 text-xs h-8 px-3 rounded-full flex items-center gap-1.5 shadow-sm"
+                                >
+                                  <Play className="w-3 h-3" />
+                                  {analyzingChallengeId === currentChallenge.id ? "Analyzing with AI..." : "Run Code & AI Review"}
+                                </Button>
+                              </div>
+
+                              <textarea
+                                value={codeInputs[currentChallenge.id] ?? (currentChallenge.submittedCode || currentChallenge.starterCode || "")}
+                                onChange={(e) => setCodeInputs((prev) => ({ ...prev, [currentChallenge.id]: e.target.value }))}
+                                rows={9}
+                                className="w-full font-mono text-xs p-4 rounded-xl bg-ink text-paper border border-ink-soft focus:outline-none focus:ring-1 focus:ring-forest leading-relaxed resize-none"
+                                placeholder="// Write or test candidate code here..."
+                              />
+
+                              {/* AI Review Diagnostics */}
+                              {currentChallenge.aiCodeReview && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 8 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  className={`p-4 rounded-xl border text-xs space-y-2 ${
+                                    currentChallenge.aiCodeReview.passed
+                                      ? "bg-forest/10 border-forest/30 text-forest"
+                                      : "bg-destructive/10 border-destructive/30 text-destructive"
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between font-semibold">
+                                    <span className="flex items-center gap-1.5">
+                                      {currentChallenge.aiCodeReview.passed ? (
+                                        <CheckCircle2 className="w-4 h-4 text-forest" />
+                                      ) : (
+                                        <AlertCircle className="w-4 h-4 text-destructive" />
+                                      )}
+                                      AI Diagnostic: {currentChallenge.aiCodeReview.feedback}
+                                    </span>
+                                    <span className="font-mono text-[10px]">
+                                      Efficiency: {currentChallenge.aiCodeReview.efficiencyRating}
+                                    </span>
+                                  </div>
+
+                                  {(currentChallenge.aiCodeReview.errorsDetected || []).length > 0 && (
+                                    <div className="space-y-1 pt-1 border-t border-destructive/20 font-mono text-[11px]">
+                                      {(currentChallenge.aiCodeReview.errorsDetected || []).map((err, i) => (
+                                        <div key={i} className="flex items-start gap-1">
+                                          <Bug className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                          <span>{err}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {currentChallenge.aiCodeReview.fixSuggestion && (
+                                    <div className="text-[11px] text-ink-soft bg-paper-2 p-2.5 rounded-lg border border-ink/5 mt-1 font-mono">
+                                      <strong>AI Fix Suggestion: </strong> {currentChallenge.aiCodeReview.fixSuggestion}
+                                    </div>
+                                  )}
+                                </motion.div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-8 rounded-2xl bg-paper border border-ink/10 text-center text-ink-muted text-xs">
+                          No coding challenges generated for this track yet.
+                        </div>
+                      )}
                     </>
                   )}
                 </motion.div>
@@ -1620,7 +1796,7 @@ export const BeforeInterviewHRContent = () => {
                         {currentApp.currentStage !== "rejected" && isResumePassed && isGithubPassed && (
                           <button
                             onClick={() => handleAdvanceToInterview(currentApp)}
-                            className="px-4 py-2 rounded-full bg-forest text-paper font-medium hover:bg-forest/90 transition-colors flex items-center gap-1.5"
+                            className="px-4 py-2 rounded-full bg-forest text-paper font-medium hover:bg-forest/90 transition-colors flex items-center gap-1.5 shadow-sm"
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" /> Advance to Interview Process
                           </button>
@@ -1641,7 +1817,7 @@ export const BeforeInterviewHRContent = () => {
             </AnimatePresence>
           </div>
 
-          {/* Bottom Footer matching Screenshot */}
+          {/* Bottom Footer */}
           <div className="p-4 bg-paper-2 border-t border-ink/10 flex items-center justify-between text-xs text-ink-muted">
             <span>💡 Click through the numbered tabs above or change candidate profiles to inspect live variations.</span>
             <span className="font-mono text-[11px] text-forest font-medium hidden sm:inline">100% Explainable AI Verification</span>
@@ -1700,6 +1876,7 @@ export const BeforeInterviewHRContent = () => {
           </motion.div>
         </div>
       )}
+
       {/* Resume Preview Modal */}
       {resumePreviewApp && (
         <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1811,8 +1988,6 @@ export const BeforeInterviewHRContent = () => {
     </div>
   );
 };
-
-const LockIcon = () => <span className="text-lg">🔒</span>;
 
 export const BeforeInterviewHRPanel = () => {
   return (
