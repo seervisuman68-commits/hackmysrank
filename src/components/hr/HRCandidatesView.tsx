@@ -21,6 +21,7 @@ import OfferLetterPanel from "@/components/OfferLetterPanel";
 import { sendStageEmail } from "@/lib/stageEmail";
 import { Loader2 } from "@/components/BrandLoader";
 import { getWorkflowApplications } from "@/lib/hiringWorkflowEngine";
+import { generateAndSaveAptitudeAssessment } from "@/lib/assessmentGenerator";
 
 interface Application {
   id: string;
@@ -872,23 +873,18 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
         .eq("user_id", session.user.id)
         .maybeSingle();
 
-      const { data, error } = await supabase.functions.invoke("generate-assessment", {
-        body: {
-          jobId: app.job_id,
-          applicationId: app.id,
-          companyId,
-          createdBy: hrUser?.id,
-        },
-      });
+      const assessmentResult = await generateAndSaveAptitudeAssessment(
+        app.job_id,
+        app.id,
+        companyId,
+        hrUser?.id
+      );
 
-      if (error) throw error;
+      if (assessmentResult?.assessmentId) {
+        setAptAssessMap((prev) => ({ ...prev, [app.id]: { id: assessmentResult.assessmentId, application_id: app.id, status: assessmentResult.status || "approved" } }));
 
-      if (data?.assessmentId) {
-        setAptAssessMap((prev) => ({ ...prev, [app.id]: { id: data.assessmentId, application_id: app.id, status: data.status || "approved" } }));
-
-        // HR uploaded their own questions while posting the job → send them straight
-        // to the candidate, no AI generation and no review screen.
-        if (data.source === "pre_uploaded") {
+        // If pre-uploaded or approved directly, send to candidate
+        if (assessmentResult.source === "pre_uploaded") {
           await handleUpdateStage(app.id, "aptitude_test");
           toast({
             title: "✅ Test sent",
@@ -899,16 +895,17 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
         }
 
         toast({
-          title: "🤖 AI has created the aptitude questions",
-          description: "Please review before sending to candidate. Nothing sent yet.",
+          title: "🤖 Aptitude Test Prepared",
+          description: "Opening review assessment screen to inspect and approve questions.",
         });
         await notifyHROfManagerAction(
           "📝 Questions Generated",
           `${currentUserName} generated aptitude questions for ${app.candidate_name} (${app.job_title}).`
         );
-        navigate(`/review-assessment/${data.assessmentId}`);
+        navigate(`/review-assessment/${assessmentResult.assessmentId}`);
       }
     } catch (e: any) {
+      console.error("Aptitude test preparation error:", e);
       toast({ title: "Error", description: e.message || "Failed to generate questions", variant: "destructive" });
     }
     setGeneratingTestFor(null);
@@ -1278,17 +1275,15 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
       let successCount = 0;
       for (const app of aptitudeEligibleApps) {
         try {
-          const { data, error } = await supabase.functions.invoke("generate-assessment", {
-            body: {
-              jobId: app.job_id,
-              applicationId: app.id,
-              companyId,
-              createdBy: currentUserId,
-            },
-          });
-          if (!error && data?.assessmentId) successCount++;
-        } catch {
-          // Continue with next candidate
+          const res = await generateAndSaveAptitudeAssessment(
+            app.job_id,
+            app.id,
+            companyId,
+            currentUserId
+          );
+          if (res?.assessmentId) successCount++;
+        } catch (err) {
+          console.warn("Bulk aptitude generation error for app:", app.id, err);
         }
       }
 
