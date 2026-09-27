@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { normalizePipeline, enabledStages, type PipelineStage } from "@/lib/pipeline";
 import { Loader2 } from "@/components/BrandLoader";
+import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
 
 
 interface JobRow {
@@ -135,12 +136,12 @@ const HRJobsView = ({ jobs, managers, onPostJob, onJobUpdated }: Props) => {
   };
 
   const handlePdfUpload = async (file: File) => {
-    if (!file || file.type !== "application/pdf") {
+    if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
       toast({ title: "Invalid file", description: "Please upload a PDF file.", variant: "destructive" });
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      toast({ title: "File too large", description: "PDF must be under 5MB.", variant: "destructive" });
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large", description: "PDF must be under 10MB.", variant: "destructive" });
       return;
     }
 
@@ -151,39 +152,24 @@ const HRJobsView = ({ jobs, managers, onPostJob, onJobUpdated }: Props) => {
     toast({ title: "🤖 Analyzing PDF...", description: "AI is converting your PDF into MCQ questions." });
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("jobId", editJob?.id || "");
+      const result = await parsePdfQuestions(file, {
+        jobId: editJob?.id || "",
+        jobTitle: editJob?.title || "Software Engineer",
+      });
 
-      const response = await fetch(
-        `${SUPABASE_FUNCTIONS_URL}/parse-pdf-questions`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          },
-          body: formData,
-        }
-      );
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Failed (${response.status})`);
-      }
-
-      const data = await response.json();
-      if (data.questions) {
-        setParsedQuestions(data.questions);
-        const count = data.questions.sections?.reduce(
+      if (result.sections && result.sections.length > 0) {
+        setParsedQuestions({ sections: result.sections });
+        const count = result.sections.reduce(
           (acc: number, sec: any) => acc + (sec.questions?.length || 0),
           0
-        ) || 0;
+        );
         setQuestionCount(count);
-        setHasExistingQuestions(false); // It's a new upload
+        setHasExistingQuestions(false);
         toast({ title: `✅ ${count} questions extracted!` });
       }
     } catch (err: any) {
-      toast({ title: "PDF parsing failed", description: err.message, variant: "destructive" });
+      console.error("HRJobsView PDF parsing error:", err);
+      toast({ title: "PDF parsing failed", description: err.message || "Could not process PDF", variant: "destructive" });
       setPdfFile(null);
     }
     setParsingPdf(false);

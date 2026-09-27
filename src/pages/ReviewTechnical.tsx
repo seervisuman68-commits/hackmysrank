@@ -11,6 +11,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Check, Pencil, RefreshCw, Trash2, Plus, FileUp, CheckCircle2, Clock } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
 import { sendStageEmail } from "@/lib/stageEmail";
+import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
 
 interface DSAProblem {
   problem_number: number;
@@ -366,33 +367,13 @@ const ReviewTechnical = () => {
     setUploadingPdf(true);
     toast({ title: "📄 Processing...", description: "Extracting questions from your file." });
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Your session expired. Please sign in again.");
+      const result = await parsePdfQuestions(file, {
+        jobId: assessment?.job_id,
+        jobTitle: "Software Engineer",
+      });
 
-      const formData = new FormData();
-      formData.append("file", file);
-      if (assessment?.job_id) formData.append("jobId", assessment.job_id);
-
-      const response = await fetch(
-        `${SUPABASE_FUNCTIONS_URL}/parse-pdf-questions`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${session.access_token}` },
-          body: formData,
-        }
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.error || "Failed to process file");
-
-      // The parser returns a flat array of MCQs (option_a..option_d).
-      // Older shapes with { sections: [...] } are still supported.
-      const raw: any[] = Array.isArray(data?.questions)
-        ? data.questions
-        : (data?.questions?.sections || []).flatMap((sec: any) =>
-            (sec.questions || []).map((qq: any) => ({ ...qq, topic: qq.topic || sec.name })),
-          );
-
-      if (raw.length === 0) throw new Error("No questions could be extracted from this file.");
+      const raw = result.questions;
+      if (!raw || raw.length === 0) throw new Error("No questions could be extracted from this file.");
 
       const newMcq = [...mcqQuestions];
       raw.forEach((qq: any) => {
@@ -414,7 +395,8 @@ const ReviewTechnical = () => {
       await saveQuestions(dsaProblems, codingTasks, newMcq);
       toast({ title: "✅ Questions Added!", description: `${added} questions extracted from your file.` });
     } catch (e: any) {
-      toast({ title: "Upload failed", description: e.message, variant: "destructive" });
+      console.error("ReviewTechnical PDF parsing error:", e);
+      toast({ title: "Upload failed", description: e.message || "Failed to parse file", variant: "destructive" });
     }
     setUploadingPdf(false);
     if (fileInputRef.current) fileInputRef.current.value = "";

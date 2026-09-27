@@ -21,7 +21,7 @@ import OfferLetterPanel from "@/components/OfferLetterPanel";
 import { sendStageEmail } from "@/lib/stageEmail";
 import { Loader2 } from "@/components/BrandLoader";
 import { getWorkflowApplications } from "@/lib/hiringWorkflowEngine";
-import { generateAndSaveAptitudeAssessment } from "@/lib/assessmentGenerator";
+import { generateAndSaveAptitudeAssessment, generateAndSaveTechnicalAssessment } from "@/lib/assessmentGenerator";
 
 interface Application {
   id: string;
@@ -1088,7 +1088,7 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
     setGeneratingTechnicalFor(app.id);
     toast({
       title: "🤖 Generating Technical Questions...",
-      description: "AI is creating DSA, coding, and MCQ questions based on the candidate's resume. Please wait.",
+      description: "AI is creating DSA, coding, and MCQ questions based on the candidate's profile. Please wait.",
     });
 
     try {
@@ -1100,18 +1100,14 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
         .eq("user_id", session.user.id)
         .maybeSingle();
 
-      const { data, error } = await supabase.functions.invoke("generate-technical", {
-        body: {
-          jobId: app.job_id,
-          applicationId: app.id,
-          companyId,
-          createdBy: currentUser?.id,
-        },
-      });
+      const result = await generateAndSaveTechnicalAssessment(
+        app.job_id,
+        app.id,
+        companyId,
+        currentUser?.id
+      );
 
-      if (error) throw error;
-
-      if (data?.assessmentId) {
+      if (result?.assessmentId) {
         // Optimistic update
         setApplications((prev) =>
           prev.map((a) => a.id === app.id ? { ...a, current_stage: "technical_round" } : a)
@@ -1119,15 +1115,16 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
         await supabase.from("applications").update({ current_stage: "technical_round" }).eq("id", app.id);
         toast({
           title: "🤖 Technical questions generated!",
-          description: "Both HR and Manager must review and approve before sending to candidate.",
+          description: "Review and approve questions before releasing to the candidate.",
         });
         await notifyHROfManagerAction(
           "💻 Technical Round Opened",
           `${currentUserName} opened technical round for ${app.candidate_name} (${app.job_title}).`
         );
-        navigate(`/review-technical/${data.assessmentId}`);
+        navigate(`/review-technical/${result.assessmentId}`);
       }
     } catch (e: any) {
+      console.error("Technical round generation error:", e);
       toast({ title: "Error", description: e.message || "Failed to generate technical questions", variant: "destructive" });
     }
     setGeneratingTechnicalFor(null);

@@ -110,40 +110,54 @@ const ScheduleInterview = () => {
       if (error) throw error;
 
       // Update application stage
-      await supabase.from("applications").update({ current_stage: "hr_interview" }).eq("id", selected.id);
+      await supabase.from("applications").update({ current_stage: "hr_interview", status: "active" }).eq("id", selected.id);
 
       // Notify candidate
       const modeLabel = mode === "video_call" ? "Video Call" : mode === "phone_call" ? "Phone Call" : "In Person";
-      sendStageEmail({
-        applicationId: selected.id,
-        event: "round_scheduled",
-        stage: roundType,
-        scheduledAt: `${scheduledDate} at ${scheduledTime}`,
-        durationMins: parseInt(duration),
-        mode,
-      });
-      await supabase.from("notifications").insert({
-        user_id: selected.candidate_id,
-        title: "🎉 HR Interview Scheduled!",
-        message: `Congratulations! Your ${roundType.replace(/_/g, " ")} interview is scheduled.\n\n📅 Date: ${scheduledDate}\n⏰ Time: ${scheduledTime}\n⏱ Duration: ${duration} minutes\n📍 Mode: ${modeLabel}${mode === "video_call" ? "\n🔗 Join from your dashboard — the meeting room opens there." : ""}\n👤 With: ${currentUser.full_name}\n\nPlease be ready 5 minutes early. Keep your resume handy. All the best! 🎯`,
-      });
+      try {
+        sendStageEmail({
+          applicationId: selected.id,
+          event: "round_scheduled",
+          stage: roundType,
+          scheduledAt: `${scheduledDate} at ${scheduledTime}`,
+          durationMins: parseInt(duration),
+          mode,
+        });
+      } catch (emErr) {
+        console.warn("Stage email warning:", emErr);
+      }
+
+      try {
+        await supabase.from("notifications").insert({
+          user_id: selected.candidate_id,
+          title: "🎉 HR Interview Scheduled!",
+          message: `Congratulations! Your ${roundType.replace(/_/g, " ")} interview is scheduled.\n\n📅 Date: ${scheduledDate}\n⏰ Time: ${scheduledTime}\n⏱ Duration: ${duration} minutes\n📍 Mode: ${modeLabel}${mode === "video_call" ? "\n🔗 Join from your dashboard — the meeting room opens there." : ""}\n👤 With: ${currentUser.full_name}\n\nPlease be ready 5 minutes early. Keep your resume handy. All the best! 🎯`,
+        });
+      } catch (notifErr) {
+        console.warn("Candidate notification warning:", notifErr);
+      }
 
       // If manager schedules, notify HR
       if (currentUser.role === "manager") {
-        const { data: hrUsers } = await supabase.from("users").select("id").eq("role", "hr").eq("company_id", currentUser.company_id);
-        for (const hr of (hrUsers || [])) {
-          await supabase.from("notifications").insert({
-            user_id: hr.id,
-            title: "📅 Interview Scheduled by Manager",
-            message: `${currentUser.full_name} scheduled ${roundType.replace(/_/g, " ")} for ${selected.candidate_name} on ${scheduledDate} at ${scheduledTime}.`,
-          });
+        try {
+          const { data: hrUsers } = await supabase.from("users").select("id").eq("role", "hr").eq("company_id", currentUser.company_id);
+          for (const hr of (hrUsers || [])) {
+            await supabase.from("notifications").insert({
+              user_id: hr.id,
+              title: "📅 Interview Scheduled by Manager",
+              message: `${currentUser.full_name} scheduled ${roundType.replace(/_/g, " ")} for ${selected.candidate_name} on ${scheduledDate} at ${scheduledTime}.`,
+            });
+          }
+        } catch (hrNotifErr) {
+          console.warn("HR notification warning:", hrNotifErr);
         }
       }
 
       toast({ title: "✅ Interview Scheduled!", description: `${selected.candidate_name} has been notified.` });
       navigate(currentUser.role === "manager" ? "/manager-dashboard" : "/hr-dashboard");
     } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
+      console.error("Schedule interview error:", e);
+      toast({ title: "Error", description: e.message || "Failed to schedule interview", variant: "destructive" });
     }
     setSubmitting(false);
   };

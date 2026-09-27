@@ -12,6 +12,7 @@ import { normalizePipeline, defaultPipeline, PipelineStage } from "@/lib/pipelin
 import { Workflow } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
 import { addWorkflowJob } from "@/lib/hiringWorkflowEngine";
+import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
 
 export interface JobTemplateRow {
   id: string;
@@ -198,32 +199,31 @@ const AddJobPanel = ({ open, onOpenChange, companyId, hrUserId, managers, onJobC
     toast({ title: "🤖 Analyzing PDF...", description: "AI is converting your PDF into MCQ questions. Please wait." });
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const { data, error } = await supabase.functions.invoke("parse-pdf-questions", {
-        body: formData,
+      const result = await parsePdfQuestions(file, {
+        jobTitle: form.title || "Software Engineer",
+        skills: form.skills,
       });
 
-      if (error) {
-        // Try to surface server JSON error message
-        let serverMsg = error.message || "Failed to parse PDF";
-        try {
-          const ctx: any = (error as any).context;
-          if (ctx && typeof ctx.json === "function") {
-            const j = await ctx.json();
-            if (j?.error) serverMsg = j.error;
-          }
-        } catch { /* ignore */ }
-        throw new Error(serverMsg);
-      }
+      const qs: ExtractedQuestion[] = result.questions.map((q) => ({
+        question_number: q.question_number,
+        question: q.question,
+        option_a: q.option_a,
+        option_b: q.option_b,
+        option_c: q.option_c,
+        option_d: q.option_d,
+        correct_answer: q.correct_answer,
+        category: q.category,
+        difficulty: q.difficulty,
+        time_seconds: q.time_seconds || 60,
+      }));
 
-      const qs: ExtractedQuestion[] = Array.isArray(data?.questions) ? data.questions : [];
-      if (qs.length === 0) throw new Error("No questions could be extracted from this PDF. Try a clearer PDF with selectable text.");
+      if (qs.length === 0) throw new Error("No questions could be extracted from this PDF.");
 
       setExtractedQuestions(qs);
       setPreviewOpen(true);
+      toast({ title: `✅ ${qs.length} Questions Extracted!`, description: "Review and confirm questions for this job." });
     } catch (err: any) {
+      console.error("PDF parsing error:", err);
       toast({ title: "PDF parsing failed", description: err?.message || "Unknown error", variant: "destructive" });
       setPdfFile(null);
     }

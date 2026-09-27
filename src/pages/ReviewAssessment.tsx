@@ -12,6 +12,7 @@ import { ArrowLeft, Check, Pencil, RefreshCw, Trash2, Plus, Upload, FileUp } fro
 import { Loader2 } from "@/components/BrandLoader";
 import { generateComprehensiveAptitudeQuestions } from "@/lib/assessmentGenerator";
 import { sendStageEmail } from "@/lib/stageEmail";
+import { parsePdfQuestions } from "@/lib/pdfQuestionParser";
 
 interface Question {
   question_number: number;
@@ -251,43 +252,40 @@ const ReviewAssessment = () => {
     toast({ title: "📄 Processing PDF...", description: "AI is extracting and converting questions from your PDF." });
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      if (assessment?.job_id) formData.append("jobId", assessment.job_id);
-
-      const { data, error: invokeErr } = await supabase.functions.invoke("parse-pdf-questions", {
-        body: formData,
+      const result = await parsePdfQuestions(file, {
+        jobId: assessment?.job_id,
+        jobTitle: jobTitle || "Software Engineer",
       });
-      if (invokeErr) throw invokeErr;
-      if ((data as any)?.error) throw new Error((data as any).error);
 
-      if (data?.questions?.sections) {
+      if (result.sections && result.sections.length > 0) {
         // Merge uploaded questions into existing sections or replace
         const newSections = [...sections];
-        for (const uploadedSection of data.questions.sections) {
+        for (const uploadedSection of result.sections) {
           const existingIdx = newSections.findIndex(
             (s) => s.name.toLowerCase() === uploadedSection.name.toLowerCase()
           );
           if (existingIdx !== -1) {
             // Add to existing section
             const startNum = newSections[existingIdx].questions.length + 1;
-            const numberedQuestions = uploadedSection.questions.map((q: Question, i: number) => ({
+            const numberedQuestions = uploadedSection.questions.map((q: any, i: number) => ({
               ...q,
               question_number: startNum + i,
             }));
             newSections[existingIdx].questions.push(...numberedQuestions);
           } else {
             // Add as new section
-            newSections.push(uploadedSection);
+            newSections.push(uploadedSection as any);
           }
         }
         await saveQuestions(newSections);
+        const totalExtracted = result.sections.reduce((sum: number, s: any) => sum + s.questions.length, 0);
         toast({
           title: "✅ PDF Questions Added!",
-          description: `${data.questions.sections.reduce((sum: number, s: any) => sum + s.questions.length, 0)} questions extracted and added.`,
+          description: `${totalExtracted} questions extracted and added.`,
         });
       }
     } catch (e: any) {
+      console.error("ReviewAssessment PDF parsing error:", e);
       toast({ title: "Error", description: e.message || "Failed to process PDF", variant: "destructive" });
     }
 
