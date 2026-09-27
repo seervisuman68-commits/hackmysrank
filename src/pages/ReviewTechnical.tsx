@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
 import { ArrowLeft, Check, Pencil, RefreshCw, Trash2, Plus, FileUp, CheckCircle2, Clock } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
+import { sendStageEmail } from "@/lib/stageEmail";
 
 interface DSAProblem {
   problem_number: number;
@@ -284,37 +285,67 @@ const ReviewTechnical = () => {
         manager_approved_at: new Date().toISOString(),
         status: "approved",
         approved_at: new Date().toISOString(),
+        hr_approved: true,
+        hr_approved_at: new Date().toISOString(),
       }).eq("id", assessmentId);
 
       const { data: refreshed } = await supabase.from("assessments").select("*").eq("id", assessmentId).maybeSingle();
       if (refreshed) setAssessment(refreshed);
 
-      // Notify HR
-      const { data: hrUsers } = await supabase
-        .from("users")
-        .select("id")
-        .eq("company_id", assessment.company_id)
-        .eq("role", "hr");
+      // Update application stage
+      const { error: appErr } = await supabase
+        .from("applications")
+        .update({ current_stage: "technical_round", status: "active" })
+        .eq("id", assessment.application_id);
 
-      if (hrUsers && hrUsers.length > 0) {
-        await supabase.from("notifications").insert(
-          hrUsers.map((u) => ({
-            user_id: u.id,
-            title: "✅ Technical Questions Approved",
-            message: `Hiring Manager approved technical questions for ${candidateName}. Test has been sent to the candidate.`,
-          }))
-        );
+      if (appErr) {
+        console.warn("Application update error:", appErr);
       }
 
-      // Notify candidate and update stage
-      const { data: app } = await supabase.from("applications").select("candidate_id").eq("id", assessment.application_id).maybeSingle();
-      if (app) {
-        await supabase.from("applications").update({ current_stage: "technical_test" }).eq("id", assessment.application_id);
-        await supabase.from("notifications").insert({
-          user_id: app.candidate_id,
-          title: "💻 Technical Round Ready!",
-          message: "Congratulations! You are selected for the Technical Round. Login to take your technical test. Complete within 48 hours.",
-        });
+      // Notify HR
+      try {
+        const { data: hrUsers } = await supabase
+          .from("users")
+          .select("id")
+          .eq("company_id", assessment.company_id)
+          .eq("role", "hr");
+
+        if (hrUsers && hrUsers.length > 0) {
+          await supabase.from("notifications").insert(
+            hrUsers.map((u) => ({
+              user_id: u.id,
+              title: "✅ Technical Questions Approved",
+              message: `Hiring Manager approved technical questions for ${candidateName}. Test has been sent to the candidate.`,
+            }))
+          );
+        }
+      } catch (hrNotifErr) {
+        console.warn("HR notification warning:", hrNotifErr);
+      }
+
+      // Notify candidate and send stage email
+      const { data: app } = await supabase.from("applications").select("id, candidate_id").eq("id", assessment.application_id).maybeSingle();
+      if (app?.candidate_id) {
+        try {
+          await supabase.from("notifications").insert({
+            user_id: app.candidate_id,
+            title: "💻 Technical Round Ready!",
+            message: "Congratulations! You are selected for the Technical Round. Login to take your technical test. Complete within 48 hours.",
+          });
+        } catch (candNotifErr) {
+          console.warn("Candidate notification warning:", candNotifErr);
+        }
+
+        try {
+          sendStageEmail({
+            applicationId: assessment.application_id,
+            event: "shortlisted",
+            stage: "aptitude_test",
+            nextStage: "technical_round",
+          });
+        } catch (candEmailErr) {
+          console.warn("Candidate email warning:", candEmailErr);
+        }
       }
 
       toast({ title: "✅ Approved!", description: "Technical test sent to candidate. HR has been notified." });

@@ -11,6 +11,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Check, Pencil, RefreshCw, Trash2, Plus, Upload, FileUp } from "lucide-react";
 import { Loader2 } from "@/components/BrandLoader";
 import { generateComprehensiveAptitudeQuestions } from "@/lib/assessmentGenerator";
+import { sendStageEmail } from "@/lib/stageEmail";
 
 interface Question {
   question_number: number;
@@ -98,14 +99,22 @@ const ReviewAssessment = () => {
 
     setAssessment(data);
 
-    const questions = data.questions as any;
-    if (questions?.sections) {
-      setSections(questions.sections);
-    }
-
     // Get job title
-    const { data: job } = await supabase.from("jobs").select("title").eq("id", data.job_id).maybeSingle();
+    const { data: job } = await supabase.from("jobs").select("title, skills_required").eq("id", data.job_id).maybeSingle();
     if (job) setJobTitle(job.title);
+
+    const questions = data.questions as any;
+    if (questions?.sections && Array.isArray(questions.sections) && questions.sections.length > 0) {
+      setSections(questions.sections);
+    } else {
+      const skills = Array.isArray(job?.skills_required) ? job.skills_required : [];
+      const generated = generateComprehensiveAptitudeQuestions(job?.title || "Software Engineer", skills);
+      setSections(generated.sections);
+      await supabase
+        .from("assessments")
+        .update({ questions: JSON.parse(JSON.stringify(generated)) })
+        .eq("id", assessmentId);
+    }
 
     // Get candidate name
     const { data: app } = await supabase.from("applications").select("candidate_id").eq("id", data.application_id).maybeSingle();
@@ -290,38 +299,84 @@ const ReviewAssessment = () => {
   const handleApprove = async () => {
     setApproving(true);
     try {
-      // Update assessment status
-      await supabase
+      let currentSecs = sections;
+      if (!currentSecs || currentSecs.length === 0 || currentSecs.reduce((sum, s) => sum + s.questions.length, 0) === 0) {
+        const generated = generateComprehensiveAptitudeQuestions(jobTitle || "Software Engineer");
+        currentSecs = generated.sections;
+        setSections(currentSecs);
+      }
+
+      // Update assessment status and persist questions
+      const { error: assessErr } = await supabase
         .from("assessments")
-        .update({ status: "approved", approved_at: new Date().toISOString() })
+        .update({
+          questions: JSON.parse(JSON.stringify({ sections: currentSecs })),
+          status: "approved",
+          hr_approved: true,
+          approved_at: new Date().toISOString(),
+          manager_approved: true,
+          manager_approved_at: new Date().toISOString(),
+        })
         .eq("id", assessmentId);
 
-      // Update application stage
-      await supabase
+      if (assessErr) {
+        console.warn("Notice: assessment status update warning:", assessErr);
+      }
+
+      // Update application stage and status
+      const { error: appErr } = await supabase
         .from("applications")
-        .update({ current_stage: "aptitude_test" })
+        .update({
+          current_stage: "aptitude_test",
+          status: "active",
+        })
         .eq("id", assessment.application_id);
 
-      // Get candidate id
+      if (appErr) {
+        console.error("Error updating application stage:", appErr);
+        throw new Error(appErr.message || "Failed to update candidate application stage");
+      }
+
+      // Get candidate details for notification and email
       const { data: app } = await supabase
         .from("applications")
-        .select("candidate_id")
+        .select("id, candidate_id, candidate_name, candidate_email, job_title")
         .eq("id", assessment.application_id)
         .maybeSingle();
 
-      if (app) {
-        // Send notification to candidate
-        await supabase.from("notifications").insert({
-          user_id: app.candidate_id,
-          title: "🎉 You are shortlisted!",
-          message: `Congratulations! Your resume for "${jobTitle}" has been reviewed and you are selected for the Aptitude Test round. Login to take your test. Complete within 48 hours.`,
-        });
+      if (app?.candidate_id) {
+        // Send in-app notification safely
+        try {
+          await supabase.from("notifications").insert({
+            user_id: app.candidate_id,
+            title: "🎉 You are shortlisted for the Aptitude Test!",
+            message: `Congratulations! Your resume for "${jobTitle || app.job_title || "the position"}" has been reviewed and you are selected for the Aptitude Test round. Login to your dashboard to take your test within 48 hours.`,
+          });
+        } catch (notifErr) {
+          console.warn("Notification insert warning:", notifErr);
+        }
+
+        // Send stage transition email safely
+        try {
+          sendStageEmail({
+            applicationId: assessment.application_id,
+            event: "shortlisted",
+            stage: "applied",
+            nextStage: "aptitude_test",
+          });
+        } catch (emailErr) {
+          console.warn("Email warning:", emailErr);
+        }
       }
 
-      toast({ title: "Approved!", description: "Test sent to candidate. They will be notified." });
+      toast({
+        title: "✅ Test Sent to Candidate!",
+        description: `${candidateName || "The candidate"} can now access and complete their Aptitude Test.`,
+      });
       navigate(userRole === "manager" ? "/manager-dashboard" : "/hr-dashboard");
     } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
+      console.error("handleApprove error:", e);
+      toast({ title: "Error", description: e.message || "Failed to send test to candidate", variant: "destructive" });
     }
     setApproving(false);
   };

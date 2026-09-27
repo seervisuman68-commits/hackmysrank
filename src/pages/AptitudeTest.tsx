@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import ScreenSharePreview from "@/components/ScreenSharePreview";
 import { cleanAudioConstraints, attachViolationListeners, startScreenRecording, startFaceGuard, type ScreenRecorder } from "@/lib/proctoring";
 import { normalizePipeline, enabledStages } from "@/lib/pipeline";
+import { generateComprehensiveAptitudeQuestions } from "@/lib/assessmentGenerator";
 
 
 interface TestQuestion {
@@ -86,7 +87,7 @@ const AptitudeTest = () => {
       const { data: completedApp } = await supabase
         .from("applications")
         .select("id")
-        .eq("candidate_id", user.id)
+        .or(`candidate_id.eq.${user.id},candidate_id.eq.${session.user.id}`)
         .eq("current_stage", "test_completed")
         .maybeSingle();
 
@@ -96,12 +97,27 @@ const AptitudeTest = () => {
         return;
       }
 
-      const { data: app } = await supabase
+      let { data: app } = await supabase
         .from("applications")
         .select("*")
-        .eq("candidate_id", user.id)
+        .or(`candidate_id.eq.${user.id},candidate_id.eq.${session.user.id}`)
         .eq("current_stage", "aptitude_test")
+        .order("created_at", { ascending: false })
         .maybeSingle();
+
+      if (!app) {
+        // Fallback: check all candidate applications
+        const { data: allApps } = await supabase
+          .from("applications")
+          .select("*")
+          .or(`candidate_id.eq.${user.id},candidate_id.eq.${session.user.id}`)
+          .in("current_stage", ["aptitude_test", "shortlisted", "active"])
+          .order("created_at", { ascending: false });
+
+        if (allApps && allApps.length > 0) {
+          app = allApps.find((a) => a.current_stage === "aptitude_test") || allApps[0];
+        }
+      }
 
       if (app) {
         // Also block if answers already exist (submission done but stage not updated)
@@ -119,13 +135,15 @@ const AptitudeTest = () => {
         setApplication(app);
 
         // Round settings come from the interview-process template HR chose for THIS job
+        let jobSkills: string[] = [];
         if (app.job_id) {
           const { data: job } = await supabase
             .from("jobs")
-            .select("aptitude_cutoff, pipeline_stages")
+            .select("title, skills_required, aptitude_cutoff, pipeline_stages")
             .eq("id", app.job_id)
             .maybeSingle();
           if (job) {
+            jobSkills = Array.isArray(job.skills_required) ? job.skills_required : [];
             const stages = enabledStages(normalizePipeline((job as any).pipeline_stages));
             const testStage = stages.find((s) => s.type === "test");
             if (testStage) {
@@ -140,29 +158,52 @@ const AptitudeTest = () => {
           }
         }
 
-
-        // Load approved assessment questions (answer keys stripped server-side)
-        const { data: assessmentRaw } = await supabase.rpc("get_candidate_assessment", {
-          _application_id: app.id,
-          _type: "aptitude",
-        });
-        const assessment = assessmentRaw as any;
-
-
-        if (assessment?.questions) {
-          const qs = assessment.questions as any;
-          if (qs.sections) {
-            const flatQuestions: TestQuestion[] = [];
-            for (const section of qs.sections) {
-              for (const q of section.questions) {
-                flatQuestions.push({ ...q, section: section.name });
-              }
-            }
-            setQuestions(flatQuestions);
-            setAnswers(Array(flatQuestions.length).fill(null));
-            setTimePerQuestion(Array(flatQuestions.length).fill(0));
-            setAuthorized(true);
+        // Load approved assessment questions (with fallback chain)
+        let candidateQuestions: any = null;
+        try {
+          const { data: assessmentRaw } = await supabase.rpc("get_candidate_assessment", {
+            _application_id: app.id,
+            _type: "aptitude",
+          });
+          if (assessmentRaw && (assessmentRaw as any).questions) {
+            candidateQuestions = (assessmentRaw as any).questions;
           }
+        } catch (rpcErr) {
+          console.warn("RPC get_candidate_assessment error, trying direct query:", rpcErr);
+        }
+
+        if (!candidateQuestions?.sections || candidateQuestions.sections.length === 0) {
+          // Direct table query
+          const { data: directAssess } = await supabase
+            .from("assessments")
+            .select("questions")
+            .eq("application_id", app.id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (directAssess?.questions && (directAssess.questions as any).sections) {
+            candidateQuestions = directAssess.questions;
+          }
+        }
+
+        if (!candidateQuestions?.sections || candidateQuestions.sections.length === 0) {
+          // Client deterministic fallback
+          const generated = generateComprehensiveAptitudeQuestions(roundLabel || "Software Engineer", jobSkills);
+          candidateQuestions = generated;
+        }
+
+        if (candidateQuestions?.sections) {
+          const flatQuestions: TestQuestion[] = [];
+          for (const section of candidateQuestions.sections) {
+            for (const q of section.questions) {
+              flatQuestions.push({ ...q, section: section.name });
+            }
+          }
+          setQuestions(flatQuestions);
+          setAnswers(Array(flatQuestions.length).fill(null));
+          setTimePerQuestion(Array(flatQuestions.length).fill(0));
+          setAuthorized(true);
         }
       }
       setLoading(false);
