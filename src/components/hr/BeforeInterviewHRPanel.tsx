@@ -100,15 +100,24 @@ export const BeforeInterviewHRContent = () => {
         const candidateIds = [...new Set(dbApps.map((a) => a.candidate_id).filter(Boolean))];
         const [usersRes, profilesRes] = await Promise.all([
           candidateIds.length > 0
-            ? supabase.from("users").select("id, full_name, email").in("id", candidateIds)
+            ? supabase.from("users").select("id, user_id, full_name, email").or(`id.in.(${candidateIds.join(",")}),user_id.in.(${candidateIds.join(",")})`)
             : { data: [] },
           candidateIds.length > 0
-            ? supabase.from("candidate_profiles").select("id, full_name, github_url, skills, experience_years, bio, resume_url").in("id", candidateIds)
+            ? supabase.from("candidate_profiles").select("id, user_id, full_name, github_url, skills, experience_years, bio, resume_url").or(`id.in.(${candidateIds.join(",")}),user_id.in.(${candidateIds.join(",")})`)
             : { data: [] },
         ]);
 
-        const userMap = Object.fromEntries((usersRes.data || []).map((u) => [u.id, u]));
-        const profileMap = Object.fromEntries(((profilesRes.data as any[]) || []).map((p: any) => [p.id, p]));
+        const userMap: Record<string, any> = {};
+        (usersRes.data || []).forEach((u: any) => {
+          if (u.id) userMap[u.id] = u;
+          if (u.user_id) userMap[u.user_id] = u;
+        });
+
+        const profileMap: Record<string, any> = {};
+        ((profilesRes.data as any[]) || []).forEach((p: any) => {
+          if (p.id) profileMap[p.id] = p;
+          if (p.user_id) profileMap[p.user_id] = p;
+        });
 
         const hydrated: CandidateApplicationSubmission[] = dbApps.map((da: any) => {
           const targetJob = loadedJobs.find((job) => job.id === da.job_id) || loadedJobs[0] || DEFAULT_JOBS[0];
@@ -117,9 +126,40 @@ export const BeforeInterviewHRContent = () => {
 
           const candidateName = user?.full_name || profile?.full_name || da.candidate_name || "Applicant";
           const candidateEmail = user?.email || da.candidate_email || "applicant@example.com";
-          const githubUrl = profile?.github_url || (da.cover_letter?.includes("github.com") ? da.cover_letter : "") || "https://github.com";
           const aiData = da.ai_analysis || {};
           const reqSkills = Array.isArray(targetJob.requiredSkills) ? targetJob.requiredSkills : ["Software Engineering"];
+
+          // Clean extraction of real GitHub URL
+          let githubUrl = "";
+          if (profile?.github_url) {
+            githubUrl = profile.github_url;
+          } else if (aiData?.github_url) {
+            githubUrl = aiData.github_url;
+          } else if (da.cover_letter) {
+            const match = da.cover_letter.match(/\[GitHub:\s*([^\]]+)\]/);
+            if (match && match[1]) {
+              githubUrl = match[1].trim();
+            } else {
+              const rawMatch = da.cover_letter.match(/(https?:\/\/(?:www\.)?github\.com\/[^\s\n\r]+)/);
+              if (rawMatch && rawMatch[1]) githubUrl = rawMatch[1].trim();
+            }
+          }
+          if (!githubUrl) githubUrl = "https://github.com";
+
+          // Clean extraction of project summary
+          let projectSummary = aiData?.project_summary || "";
+          if (!projectSummary && da.cover_letter) {
+            const match = da.cover_letter.match(/\[Project:\s*([^\]]+)\]/);
+            if (match && match[1]) projectSummary = match[1].trim();
+          }
+          if (!projectSummary) projectSummary = "Modular fullstack application architecture";
+
+          // Clean extraction of resume text summary
+          let resumeSummary = aiData?.summary || profile?.bio || "";
+          if (!resumeSummary && da.cover_letter) {
+            resumeSummary = da.cover_letter;
+          }
+          if (!resumeSummary) resumeSummary = "Verified candidate background and technical skills.";
 
           // EXACT 1:1 score matching Candidates table and Candidate Dashboard
           const rScore = (typeof da.resume_score === "number" && da.resume_score > 0 ? da.resume_score : null)
@@ -146,6 +186,8 @@ export const BeforeInterviewHRContent = () => {
           const authenticityScore = aiData.authenticity_score || 88;
           const githubScore = aiData.github_score || Math.min(100, Math.round(authenticityScore * 0.9 + 10));
 
+          const localMatch = loadedApps.find((a: any) => a.id === da.id || (a.jobId === da.job_id && (a.candidateId === da.candidate_id || a.candidateEmail === candidateEmail)));
+
           return ensureCompleteCandidateApp({
             id: da.id,
             candidateId: da.candidate_id,
@@ -156,10 +198,10 @@ export const BeforeInterviewHRContent = () => {
             candidateEmail,
             appliedDate: new Date(da.applied_at || Date.now()).toLocaleDateString(),
             resumeFileName: da.resume_url ? da.resume_url.split("/").pop() || "Candidate_Resume.pdf" : "Candidate_Resume.pdf",
-            resumeTextSummary: da.cover_letter || aiData.summary || profile?.bio || "Verified candidate background and technical skills.",
+            resumeTextSummary: resumeSummary,
             githubAccountUrl: githubUrl,
             githubRepo1Url: githubUrl,
-            projectArchitectureSummary: aiData.project_summary || "Modular fullstack application architecture",
+            projectArchitectureSummary: projectSummary,
             resumeScore: rScore,
             resumePassed,
             resumeFeedback: aiData.feedback || `Resume score evaluated to ${rScore}/100 based on technical qualifications for ${targetJob.title}.`,
@@ -179,12 +221,12 @@ export const BeforeInterviewHRContent = () => {
             detectedRepoStacks: profile?.skills || reqSkills,
             githubFeedback: "Authentic commit history with clean software modularity.",
             codeSignals: ["Modular repository pattern", "Verified domain assertions", "Clean commit lineage"],
-            generatedMCQs: generateDynamicMCQs(reqSkills, targetJob.title),
-            repoCodingChallenges: generateDynamicCodingChallenges(reqSkills, targetJob.title),
-            aiInterviewDialogue: [],
-            skillMap: [],
-            improvementPlan: [],
-            hrEvidence: {
+            generatedMCQs: localMatch?.generatedMCQs?.length ? localMatch.generatedMCQs : (aiData?.mcqs?.length ? aiData.mcqs : generateDynamicMCQs(reqSkills, targetJob.title)),
+            repoCodingChallenges: localMatch?.repoCodingChallenges?.length ? localMatch.repoCodingChallenges : (aiData?.challenges?.length ? aiData.challenges : generateDynamicCodingChallenges(reqSkills, targetJob.title)),
+            aiInterviewDialogue: localMatch?.aiInterviewDialogue?.length ? localMatch.aiInterviewDialogue : [],
+            skillMap: localMatch?.skillMap?.length ? localMatch.skillMap : [],
+            improvementPlan: localMatch?.improvementPlan?.length ? localMatch.improvementPlan : [],
+            hrEvidence: localMatch?.hrEvidence || aiData?.hr_evidence || {
               overallRecommendation: resumePassed ? "Strong Hire" : "Needs Further Technical Evaluation",
               summary: `Candidate ATS score is ${rScore}/100. Cutoff requirement: ${resumeCutoff}%.`,
               strengths: ["Strong domain stack match", "Verified code signals"],

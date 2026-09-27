@@ -429,6 +429,7 @@ Portfolio: ${(profile as any)?.portfolio_url || "https://portfolio.dev"}
           resume_score: evaluatedApp.resumeScore,
           authenticity_score: evaluatedApp.authenticityPercentage,
           github_score: evaluatedApp.githubScore,
+          github_url: githubUrl || (profile as any)?.github_url || "",
           matched_skills: evaluatedApp.matchedKeywords || [],
           missing_skills: evaluatedApp.atsBreakdown?.missingKeywords || [],
           feedback: evaluatedApp.resumeFeedback || "",
@@ -436,9 +437,17 @@ Portfolio: ${(profile as any)?.portfolio_url || "https://portfolio.dev"}
           hr_evidence: evaluatedApp.hrEvidence || {},
           summary: evaluatedApp.resumeTextSummary || "",
           project_summary: evaluatedApp.projectArchitectureSummary || "",
+          mcqs: evaluatedApp.generatedMCQs || [],
+          challenges: evaluatedApp.repoCodingChallenges || [],
         },
       })
       .eq("id", insertedApplication.id);
+
+    // Save selection so Before Interview views open this exact application immediately
+    try {
+      localStorage.setItem("hz_selected_app_id", insertedApplication.id);
+      localStorage.setItem("hz_selected_job_id", job.id);
+    } catch {}
 
     // Instant notification to HR (and assigned Manager) on every application
     try {
