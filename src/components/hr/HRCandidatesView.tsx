@@ -21,7 +21,9 @@ import OfferLetterPanel from "@/components/OfferLetterPanel";
 import { sendStageEmail } from "@/lib/stageEmail";
 import { Loader2 } from "@/components/BrandLoader";
 import { getWorkflowApplications } from "@/lib/hiringWorkflowEngine";
-import { generateAndSaveAptitudeAssessment, generateAndSaveTechnicalAssessment } from "@/lib/assessmentGenerator";
+import { generateAndSaveAptitudeAssessment, generateAndSaveTechnicalAssessment, generateComprehensiveTechnicalQuestions } from "@/lib/assessmentGenerator";
+import TechnicalQuestionsModal from "@/components/TechnicalQuestionsModal";
+import { parseTechnicalFile, ParsedTechnicalResult } from "@/lib/pdfQuestionParser";
 
 interface Application {
   id: string;
@@ -218,6 +220,17 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
   const [aptAssessMap, setAptAssessMap] = useState<Record<string, any>>({});
   const [offerMap, setOfferMap] = useState<Record<string, any>>({});
   const [interviewMap, setInterviewMap] = useState<Record<string, any>>({});
+
+  // Technical Round Setup in Dashboard
+  const [techSetupApp, setTechSetupApp] = useState<(Application & { candidate_name: string; job_title: string; candidate_email?: string }) | null>(null);
+  const [techQuestions, setTechQuestions] = useState<ParsedTechnicalResult>({ dsa: [], coding: [], mcq: [] });
+  const [techSetupSource, setTechSetupSource] = useState<"ai" | "pdf" | "job">("ai");
+  const [techUploadingFile, setTechUploadingFile] = useState(false);
+  const [techGeneratingAI, setTechGeneratingAI] = useState(false);
+  const [techSubmitting, setTechSubmitting] = useState(false);
+  const [techModalOpen, setTechModalOpen] = useState(false);
+  const [techActivePreviewTab, setTechActivePreviewTab] = useState<"dsa" | "coding" | "mcq">("dsa");
+  const techFileInputRef = useState<HTMLInputElement | null>(null);
   const [offerApp, setOfferApp] = useState<any>(null);
   const [detailsDialog, setDetailsDialog] = useState<any>(null);
   const [detailsPhotoUrl, setDetailsPhotoUrl] = useState<string | null>(null);
@@ -1084,50 +1097,222 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
     triggerClientSideVideoAnalysis(videoDialog, videoSignedUrl || "");
   };
 
-  const handleOpenTechnicalRound = async (app: Application & { candidate_name: string; job_title: string }) => {
-    setGeneratingTechnicalFor(app.id);
-    toast({
-      title: "🤖 Generating Technical Questions...",
-      description: "AI is creating DSA, coding, and MCQ questions based on the candidate's profile. Please wait.",
-    });
+  const handleOpenTechnicalRound = async (app: Application & { candidate_name: string; job_title: string; candidate_email?: string }) => {
+    setTechSetupApp(app);
+    setTechUploadingFile(false);
+    setTechGeneratingAI(false);
 
+    // Check if job has pre-uploaded technical questions in pipeline_stages
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      const { data: currentUser } = await supabase
-        .from("users")
-        .select("id")
-        .eq("user_id", session.user.id)
+      const { data: jobData } = await supabase
+        .from("jobs")
+        .select("pipeline_stages, title, skills")
+        .eq("id", app.job_id)
         .maybeSingle();
 
-      const result = await generateAndSaveTechnicalAssessment(
-        app.job_id,
-        app.id,
-        companyId,
-        currentUser?.id
-      );
+      const stages = Array.isArray(jobData?.pipeline_stages) ? jobData.pipeline_stages : [];
+      const techStage = stages.find((s: any) => s?.id === "technical" || s?.key === "technical_round" || s?.name?.toLowerCase?.().includes("technical"));
+      const jobTechQuestions = techStage?.config?.technical_questions;
 
-      if (result?.assessmentId) {
-        // Optimistic update
-        setApplications((prev) =>
-          prev.map((a) => a.id === app.id ? { ...a, current_stage: "technical_round" } : a)
-        );
-        await supabase.from("applications").update({ current_stage: "technical_round" }).eq("id", app.id);
-        toast({
-          title: "🤖 Technical questions generated!",
-          description: "Review and approve questions before releasing to the candidate.",
+      if (jobTechQuestions && ((jobTechQuestions.dsa?.length || 0) + (jobTechQuestions.coding?.length || 0) + (jobTechQuestions.mcq?.length || 0) > 0)) {
+        setTechQuestions({
+          dsa: jobTechQuestions.dsa || [],
+          coding: jobTechQuestions.coding || [],
+          mcq: jobTechQuestions.mcq || [],
         });
-        await notifyHROfManagerAction(
-          "💻 Technical Round Opened",
-          `${currentUserName} opened technical round for ${app.candidate_name} (${app.job_title}).`
-        );
-        navigate(`/review-technical/${result.assessmentId}`);
+        setTechSetupSource("job");
+      } else {
+        // Generate with AI by default
+        const generated = generateComprehensiveTechnicalQuestions(jobData?.title || app.job_title, jobData?.skills || []);
+        setTechQuestions(generated);
+        setTechSetupSource("ai");
       }
-    } catch (e: any) {
-      console.error("Technical round generation error:", e);
-      toast({ title: "Error", description: e.message || "Failed to generate technical questions", variant: "destructive" });
+    } catch (e) {
+      const generated = generateComprehensiveTechnicalQuestions(app.job_title);
+      setTechQuestions(generated);
+      setTechSetupSource("ai");
     }
-    setGeneratingTechnicalFor(null);
+  };
+
+  const handleUploadTechFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !techSetupApp) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File Too Large", description: "Max 10MB.", variant: "destructive" });
+      return;
+    }
+    setTechUploadingFile(true);
+    toast({ title: "📄 Processing file...", description: "Extracting DSA, coding tasks & MCQs." });
+    try {
+      const result = await parseTechnicalFile(file, {
+        jobId: techSetupApp.job_id,
+        jobTitle: techSetupApp.job_title,
+      });
+      setTechQuestions(result);
+      setTechSetupSource("pdf");
+      const total = (result.dsa?.length || 0) + (result.coding?.length || 0) + (result.mcq?.length || 0);
+      toast({
+        title: "✅ File Processed",
+        description: `Extracted ${result.dsa?.length || 0} DSA problems, ${result.coding?.length || 0} coding tasks, and ${result.mcq?.length || 0} MCQs.`,
+      });
+    } catch (err: any) {
+      toast({ title: "Upload Failed", description: err.message || "Could not parse technical questions", variant: "destructive" });
+    } finally {
+      setTechUploadingFile(false);
+      e.target.value = "";
+    }
+  };
+
+  const handleGenerateWithAI = async () => {
+    if (!techSetupApp) return;
+    setTechGeneratingAI(true);
+    try {
+      const { data: jobData } = await supabase
+        .from("jobs")
+        .select("title, skills")
+        .eq("id", techSetupApp.job_id)
+        .maybeSingle();
+
+      const generated = generateComprehensiveTechnicalQuestions(jobData?.title || techSetupApp.job_title, jobData?.skills || []);
+      setTechQuestions(generated);
+      setTechSetupSource("ai");
+      toast({
+        title: "✨ Created with AI",
+        description: `Generated ${generated.dsa.length} DSA problems, ${generated.coding.length} coding tasks, and ${generated.mcq.length} MCQs.`,
+      });
+    } catch (err: any) {
+      toast({ title: "Generation failed", description: err.message, variant: "destructive" });
+    } finally {
+      setTechGeneratingAI(false);
+    }
+  };
+
+  const handleSendTechnicalTestToCandidate = async () => {
+    if (!techSetupApp) return;
+    const total = (techQuestions.dsa?.length || 0) + (techQuestions.coding?.length || 0) + (techQuestions.mcq?.length || 0);
+    if (total === 0) {
+      toast({ title: "No Questions Added", description: "Please upload a file or generate questions with AI first.", variant: "destructive" });
+      return;
+    }
+    setTechSubmitting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data: hrUser } = session?.user?.id
+        ? await supabase.from("users").select("id").eq("user_id", session.user.id).maybeSingle()
+        : { data: null };
+
+      // Check existing assessment
+      const { data: existing } = await supabase
+        .from("assessments")
+        .select("id")
+        .eq("application_id", techSetupApp.id)
+        .eq("type", "technical")
+        .maybeSingle();
+
+      let assessmentId = existing?.id;
+      if (existing) {
+        await supabase
+          .from("assessments")
+          .update({
+            questions: techQuestions as any,
+            status: "approved",
+            hr_approved: true,
+            manager_approved: true,
+            approved_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+      } else {
+        const { data: created, error: createErr } = await supabase
+          .from("assessments")
+          .insert({
+            job_id: techSetupApp.job_id,
+            application_id: techSetupApp.id,
+            company_id: companyId || null,
+            questions: techQuestions as any,
+            type: "technical",
+            status: "approved",
+            hr_approved: true,
+            manager_approved: true,
+            approved_at: new Date().toISOString(),
+            created_by: hrUser?.id || null,
+          })
+          .select("id")
+          .single();
+        if (createErr) throw createErr;
+        assessmentId = created?.id;
+      }
+
+      // Update candidate stage
+      await handleUpdateStage(techSetupApp.id, "technical_round");
+
+      // Send notification to candidate
+      await supabase.from("notifications").insert({
+        user_id: techSetupApp.candidate_id,
+        title: "💻 Technical Round Test Ready!",
+        message: `Your technical assessment for ${techSetupApp.job_title} is ready. It contains ${techQuestions.dsa?.length || 0} DSA problems, ${techQuestions.coding?.length || 0} coding challenges, and ${techQuestions.mcq?.length || 0} technical questions. Login to take your test.`,
+      });
+
+      toast({
+        title: "🚀 Technical Round Active!",
+        description: `Technical test with ${total} questions sent to ${techSetupApp.candidate_name}.`,
+      });
+
+      setTechSetupApp(null);
+    } catch (err: any) {
+      console.error("Error sending technical test:", err);
+      toast({ title: "Failed to send test", description: err.message || "An error occurred", variant: "destructive" });
+    } finally {
+      setTechSubmitting(false);
+    }
+  };
+
+  const handleOpenFullReviewEditor = async () => {
+    if (!techSetupApp) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data: hrUser } = session?.user?.id
+        ? await supabase.from("users").select("id").eq("user_id", session.user.id).maybeSingle()
+        : { data: null };
+
+      const { data: existing } = await supabase
+        .from("assessments")
+        .select("id")
+        .eq("application_id", techSetupApp.id)
+        .eq("type", "technical")
+        .maybeSingle();
+
+      let assessmentId = existing?.id;
+      if (existing) {
+        await supabase
+          .from("assessments")
+          .update({
+            questions: techQuestions as any,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+      } else {
+        const { data: created, error: createErr } = await supabase
+          .from("assessments")
+          .insert({
+            job_id: techSetupApp.job_id,
+            application_id: techSetupApp.id,
+            company_id: companyId || null,
+            questions: techQuestions as any,
+            type: "technical",
+            status: "draft",
+            created_by: hrUser?.id || null,
+          })
+          .select("id")
+          .single();
+        if (createErr) throw createErr;
+        assessmentId = created?.id;
+      }
+      setTechSetupApp(null);
+      navigate(`/review-technical/${assessmentId}`);
+    } catch (err: any) {
+      toast({ title: "Error opening editor", description: err.message, variant: "destructive" });
+    }
   };
 
   const [techViolations, setTechViolations] = useState<any[]>([]);
@@ -1630,7 +1815,16 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
         {viewMode === "kanban" ? (
           <HRKanbanBoard
             apps={displayedApps as any}
-            onMove={(id, stage) => handleUpdateStage(id, stage)}
+            onMove={(id, stage) => {
+              if (stage === "technical_round") {
+                const target = applications.find((a) => a.id === id);
+                if (target) {
+                  handleOpenTechnicalRound(target);
+                  return;
+                }
+              }
+              handleUpdateStage(id, stage);
+            }}
             onView={(app) => setDetailsDialog(applications.find((a) => a.id === app.id) || app)}
             onMessage={() => toast({ title: "Open Messages", description: "Use the Messages tab to chat with this candidate." })}
           />
@@ -2620,12 +2814,14 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
               <div className="flex gap-2 pt-2">
                 <Button
                   onClick={() => {
-                    handleUpdateStage(videoDialog.id, "technical_round");
+                    const target = videoDialog;
                     setVideoDialog(null);
+                    handleOpenTechnicalRound(target);
                   }}
-                  className="bg-primary text-primary-foreground"
+                  className="bg-primary text-primary-foreground gap-1.5"
                 >
-                  ✅ Move to Technical Round
+                  <Code2 className="h-4 w-4" />
+                  Move to Technical Round
                 </Button>
                 <Button
                   variant="outline"
@@ -3837,6 +4033,288 @@ const HRCandidatesView = ({ companyId, initialJobId }: Props) => {
           onOpenChange={(o) => { if (!o) setOfferApp(null); }}
           onGenerated={() => { setOfferApp(null); fetchApplications(); }}
           currentUser={{ id: currentUserId, full_name: currentUserName, company_id: companyId }}
+        />
+      )}
+
+      {/* Technical Round Setup Dialog in Dashboard */}
+      <Dialog
+        open={!!techSetupApp}
+        onOpenChange={(o) => {
+          if (!o && !techSubmitting) setTechSetupApp(null);
+        }}
+      >
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto bg-card border-border">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle className="text-xl font-bold flex items-center gap-2 text-foreground">
+                  <Code2 className="h-5 w-5 text-orange-500" />
+                  Technical Round Setup
+                </DialogTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Configure technical round questions for <strong className="text-foreground">{techSetupApp?.candidate_name}</strong> ({techSetupApp?.job_title})
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {techSetupApp && (
+            <div className="space-y-6 pt-2">
+              {/* Question Sources Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Upload File Card */}
+                <div
+                  className={`p-4 rounded-xl border transition-all ${
+                    techSetupSource === "pdf"
+                      ? "border-primary bg-primary/5 ring-1 ring-primary"
+                      : "border-border bg-card/60 hover:border-primary/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <h4 className="text-xs font-bold text-foreground">Upload Questions</h4>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mb-3">
+                    Upload your custom technical test (.pdf, .docx, .txt) with DSA, coding challenges & MCQs.
+                  </p>
+                  <label className="inline-flex items-center justify-center w-full px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-medium cursor-pointer transition-colors">
+                    {techUploadingFile ? (
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                      </span>
+                    ) : (
+                      <span>📄 Select File</span>
+                    )}
+                    <input
+                      type="file"
+                      accept=".pdf,.docx,.txt"
+                      onChange={handleUploadTechFile}
+                      disabled={techUploadingFile}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                {/* AI Generation Card */}
+                <div
+                  className={`p-4 rounded-xl border transition-all ${
+                    techSetupSource === "ai"
+                      ? "border-purple-500 bg-purple-500/5 ring-1 ring-purple-500"
+                      : "border-border bg-card/60 hover:border-purple-500/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <Code2 className="h-4 w-4 text-purple-500" />
+                    <h4 className="text-xs font-bold text-foreground">Generate with AI</h4>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mb-3">
+                    Instantly create tailored DSA algorithms, coding challenges & domain MCQs using AI.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGenerateWithAI}
+                    disabled={techGeneratingAI}
+                    className="w-full h-8 text-xs border-purple-500/30 text-purple-500 hover:bg-purple-500/10"
+                  >
+                    {techGeneratingAI ? (
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Generating...
+                      </span>
+                    ) : (
+                      <span>✨ Auto-Generate</span>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Job Default Card */}
+                <div
+                  className={`p-4 rounded-xl border transition-all ${
+                    techSetupSource === "job"
+                      ? "border-emerald-500 bg-emerald-500/5 ring-1 ring-emerald-500"
+                      : "border-border bg-card/60 hover:border-emerald-500/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <BookOpen className="h-4 w-4 text-emerald-500" />
+                    <h4 className="text-xs font-bold text-foreground">Job Default</h4>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mb-3">
+                    Load questions attached to the job posting pipeline.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenTechnicalRound(techSetupApp)}
+                    className="w-full h-8 text-xs border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10"
+                  >
+                    <span>📂 Reload Default</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Questions Overview Summary */}
+              <div className="rounded-xl border border-border bg-card/80 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <Code2 className="h-4 w-4 text-orange-500" />
+                    Assigned Questions Summary ({(techQuestions.dsa?.length || 0) + (techQuestions.coding?.length || 0) + (techQuestions.mcq?.length || 0)} Total)
+                  </h4>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setTechModalOpen(true)}
+                    className="h-7 text-xs text-primary gap-1"
+                  >
+                    ✏️ Edit / Customize Questions
+                  </Button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div className="p-2.5 rounded-lg bg-secondary/50 text-center border border-border">
+                    <p className="text-lg font-bold text-foreground">{techQuestions.dsa?.length || 0}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase font-semibold">🧩 DSA Problems</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-secondary/50 text-center border border-border">
+                    <p className="text-lg font-bold text-foreground">{techQuestions.coding?.length || 0}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase font-semibold">💻 Coding Tasks</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-secondary/50 text-center border border-border">
+                    <p className="text-lg font-bold text-foreground">{techQuestions.mcq?.length || 0}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase font-semibold">📝 Technical MCQs</p>
+                  </div>
+                </div>
+
+                {/* Preview Tabs */}
+                <Tabs value={techActivePreviewTab} onValueChange={(v) => setTechActivePreviewTab(v as any)}>
+                  <TabsList className="grid grid-cols-3 h-8 text-xs mb-3">
+                    <TabsTrigger value="dsa">DSA ({techQuestions.dsa?.length || 0})</TabsTrigger>
+                    <TabsTrigger value="coding">Coding Tasks ({techQuestions.coding?.length || 0})</TabsTrigger>
+                    <TabsTrigger value="mcq">MCQs ({techQuestions.mcq?.length || 0})</TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="dsa" className="mt-0">
+                    <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                      {(!techQuestions.dsa || techQuestions.dsa.length === 0) ? (
+                        <p className="text-xs text-muted-foreground italic py-3 text-center">No DSA problems added yet.</p>
+                      ) : (
+                        techQuestions.dsa.map((p, idx) => (
+                          <div key={idx} className="p-3 rounded-lg border border-border bg-card text-xs">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-semibold text-foreground">#{idx + 1} {p.title}</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                  p.difficulty === "hard" ? "bg-red-500/10 text-red-500" : p.difficulty === "medium" ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500"
+                                }`}>{p.difficulty}</span>
+                                <span className="text-[10px] text-muted-foreground">{p.time_minutes}m</span>
+                              </div>
+                            </div>
+                            <p className="text-muted-foreground line-clamp-2">{p.description}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="coding" className="mt-0">
+                    <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                      {(!techQuestions.coding || techQuestions.coding.length === 0) ? (
+                        <p className="text-xs text-muted-foreground italic py-3 text-center">No coding tasks added yet.</p>
+                      ) : (
+                        techQuestions.coding.map((t, idx) => (
+                          <div key={idx} className="p-3 rounded-lg border border-border bg-card text-xs">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-semibold text-foreground">#{idx + 1} {t.title}</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                  t.difficulty === "hard" ? "bg-red-500/10 text-red-500" : t.difficulty === "medium" ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500"
+                                }`}>{t.difficulty}</span>
+                                <span className="text-[10px] text-muted-foreground">{t.time_minutes}m</span>
+                              </div>
+                            </div>
+                            <p className="text-muted-foreground line-clamp-2">{t.description}</p>
+                            {t.tech_stack && (
+                              <p className="text-[10px] text-primary mt-1">Stack: {t.tech_stack}</p>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="mcq" className="mt-0">
+                    <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                      {(!techQuestions.mcq || techQuestions.mcq.length === 0) ? (
+                        <p className="text-xs text-muted-foreground italic py-3 text-center">No technical MCQs added yet.</p>
+                      ) : (
+                        techQuestions.mcq.map((m, idx) => (
+                          <div key={idx} className="p-3 rounded-lg border border-border bg-card text-xs">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-semibold text-foreground">Q{idx + 1}. {m.question}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">{m.topic || "MCQ"}</span>
+                            </div>
+                            <p className="text-[11px] text-emerald-500 font-medium mt-1">Answer: Option {m.correct_answer}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between pt-2 border-t border-border">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenFullReviewEditor}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  🔍 Open Full Review Page
+                </Button>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={techSubmitting}
+                    onClick={() => setTechSetupApp(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={techSubmitting || ((techQuestions.dsa?.length || 0) + (techQuestions.coding?.length || 0) + (techQuestions.mcq?.length || 0) === 0)}
+                    onClick={handleSendTechnicalTestToCandidate}
+                    className="bg-primary text-primary-foreground font-semibold gap-1.5"
+                  >
+                    {techSubmitting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4" />
+                    )}
+                    {techSubmitting ? "Sending Test..." : "🚀 Approve & Send Test"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Granular Technical Questions Editor Modal */}
+      {techModalOpen && (
+        <TechnicalQuestionsModal
+          open={techModalOpen}
+          technicalData={techQuestions}
+          onClose={() => setTechModalOpen(false)}
+          onConfirm={(newData) => {
+            setTechQuestions(newData);
+            toast({ title: "Updated", description: "Technical questions updated successfully." });
+          }}
+          onReupload={() => {
+            setTechModalOpen(false);
+          }}
         />
       )}
     </motion.div>
